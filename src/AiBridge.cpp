@@ -4,9 +4,10 @@
 // AI-HOOK: Phase 1 LLM integration bridge implementation
 
 #include "utils/BaseUtil.h"
-#include "utils/StrUtil.h"
 #include "utils/ThreadUtil.h"
 #include "utils/WinUtil.h"
+#include "utils/Log.h"
+#include "utils/HttpUtil.h"
 #include "AiBridge.h"
 
 // wininet.h included via BaseUtil.h; wininet.lib linked via project
@@ -235,8 +236,8 @@ bool AiBridge::Init(const char* modelPath, const char* llamaServerExePath, int p
         return false;
     }
 
-    // StartThread() from ThreadUtil.h: returns HANDLE, takes Func0 lambda
-    mBridgeThread = StartThread([this]() { RunBridgeLoop(); }, "AiBridge");
+    // StartThread() from ThreadUtil.h: returns HANDLE, takes Func0 (not lambda)
+    mBridgeThread = StartThread(MkMethod0<AiBridge, &AiBridge::RunBridgeLoop>(this), "AiBridge");
     ReportIf(!mBridgeThread);
 
     logf("AiBridge::Init: bridge thread started (port %d)\n", port);
@@ -257,7 +258,7 @@ bool AiBridge::SpawnSidecar(const char* exePath, const char* modelPath, int port
     cmdLine.Append(modelPath);
     cmdLine.AppendFmt("\" --port %d --host 127.0.0.1 -np 1 -c 2048 --log-disable", port);
 
-    AutoFreeWstr cmdLineW = ToWStr(cmdLine.Get());
+    TempWStr cmdLineW = ToWStrTemp(cmdLine.Get());
 
     STARTUPINFOW si{};
     si.cb          = sizeof(si);
@@ -268,7 +269,7 @@ bool AiBridge::SpawnSidecar(const char* exePath, const char* modelPath, int port
 
     PROCESS_INFORMATION pi{};
     BOOL created = CreateProcessW(
-        nullptr, cmdLineW.Get(),
+        nullptr, cmdLineW,
         nullptr, nullptr,
         FALSE, CREATE_NO_WINDOW,
         nullptr, nullptr,

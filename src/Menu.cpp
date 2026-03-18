@@ -46,8 +46,9 @@
 #include "Menu.h"
 
 #include "utils/Log.h"
-#include "AiBridge.h"      // AI-HOOK: Phase 1 LLM integration
-#include "LlmResponseWnd.h" // AI-HOOK: Phase 1 LLM response popup
+#include "utils/ThreadUtil.h"  // AI-HOOK: required before AiBridge.h (Mutex)
+#include "AiBridge.h"          // AI-HOOK: Phase 1 LLM integration
+#include "LlmResponseWnd.h"    // AI-HOOK: Phase 1 LLM response popup
 
 struct BuildMenuCtx {
     WindowTab* tab = nullptr;

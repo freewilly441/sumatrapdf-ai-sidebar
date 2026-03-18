@@ -5,6 +5,7 @@
 
 #pragma once
 
+// Callers must include utils/BaseUtil.h and utils/ThreadUtil.h before this header.
 #include "AiRequest.h"
 
 // ---------------------------------------------------------------------------

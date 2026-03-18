@@ -4,8 +4,8 @@
 // AI-HOOK: New file - Phase 1 LLM inline response popup implementation
 
 #include "utils/BaseUtil.h"
-#include "utils/StrUtil.h"
 #include "utils/WinUtil.h"
+#include "utils/Log.h"
 #include "LlmResponseWnd.h"
 
 // ---------------------------------------------------------------------------
@@ -207,8 +207,8 @@ void LlmResponseWnd::OnPaint(HDC hdc, RECT& clientRect) {
         DrawTextW(hdc, loadingMsg, -1, &textRect, DT_LEFT | DT_TOP | DT_WORDBREAK);
     } else {
         SetTextColor(hdc, mIsError ? kErrorColor : kTextColor);
-        AutoFreeWstr textW = ToWStr(mResponseText.Get());
-        DrawTextW(hdc, textW.Get(), -1, &textRect, DT_LEFT | DT_TOP | DT_WORDBREAK);
+        TempWStr textW = ToWStrTemp(mResponseText.Get());
+        DrawTextW(hdc, textW, -1, &textRect, DT_LEFT | DT_TOP | DT_WORDBREAK);
     }
 
     // Dismiss hint at bottom

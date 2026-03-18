@@ -54,8 +54,9 @@
 #include "Translations.h"
 
 #include "utils/Log.h"
-#include "AiBridge.h"       // AI-HOOK: Phase 1 LLM integration
-#include "LlmResponseWnd.h" // AI-HOOK: Phase 1 LLM response popup
+#include "utils/ThreadUtil.h"  // AI-HOOK: required before AiBridge.h (Mutex)
+#include "AiBridge.h"          // AI-HOOK: Phase 1 LLM integration
+#include "LlmResponseWnd.h"    // AI-HOOK: Phase 1 LLM response popup
 
 // if set instead of trying to render pages we don't have, we simply do nothing
 // this reduces the flickering when going quickly through pages but creates

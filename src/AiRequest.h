@@ -70,10 +70,15 @@ struct AiRequest {
 // AI-HOOK: These must not conflict with other WM_USER+N values in the app.
 // Current SumatraPDF uses WM_USER+0 through ~+20 range; we start at +100.
 // ---------------------------------------------------------------------------
-constexpr UINT WM_AI_RESPONSE_DONE = WM_USER + 100;
+// Existing WM_USER usage in this codebase:
+//   WM_USER+101 : kUwmPaintAgain  (previewer, separate HWND)
+//   WM_USER+102 : SB_HALF_PAGEUP  (SumatraPDF.h)
+//   WM_USER+103 : SB_HALF_PAGEDOWN(SumatraPDF.h)
+// We start at +200 to give clear separation.
+constexpr UINT WM_AI_RESPONSE_DONE = WM_USER + 200;
 // lParam = AiResponseMsg* (isError=false); UI thread takes ownership, must delete
 // wParam = request_id (verify against active request before rendering)
 
-constexpr UINT WM_AI_ERROR = WM_USER + 101;
+constexpr UINT WM_AI_ERROR = WM_USER + 201;
 // lParam = AiResponseMsg* (isError=true); same ownership rules
 // wParam = request_id

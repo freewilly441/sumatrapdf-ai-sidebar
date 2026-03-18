@@ -5960,7 +5960,8 @@ static LRESULT FrameOnCommand(MainWindow* win, HWND hwnd, UINT msg, WPARAM wp, L
             const char* pageCtx = "";
 
             // Get anchor rect in screen coordinates for popup placement
-            RECT anchorRect = win->selectionRect;
+            // win->selectionRect is Rect (internal type); ToRECT converts to RECT
+            RECT anchorRect = ToRECT(win->selectionRect);
             MapWindowPoints(win->hwndCanvas, HWND_DESKTOP,
                             (POINT*)&anchorRect, 2);
 
