@@ -1,7 +1,7 @@
 /* Copyright 2024 the SumatraPDF project authors (see AUTHORS file).
    License: GPLv3 */
 
-// AI-HOOK: New file - Phase 1 LLM integration bridge layer
+// AI-HOOK: Phase 1 LLM integration bridge layer
 
 #pragma once
 
@@ -10,15 +10,15 @@
 // ---------------------------------------------------------------------------
 // AiBridge
 //
-// Owns the sidecar process lifetime, the async request queue, and all
-// communication with llama-server (Phase 1: HTTP POST on loopback).
+// Owns sidecar process lifetime, async request queue, and all communication
+// with llama-server (Phase 1: HTTP POST on loopback via WinInet).
 //
 // Threading model:
-//   UI thread    : calls EnqueueRequest(), CancelRequest(), Shutdown()
-//   Bridge thread: processes queue, sends HTTP, posts WM_AI_* to targetHwnd
+//   UI thread    : EnqueueRequest(), CancelRequest(), Shutdown()
+//   Bridge thread: dequeues, sends HTTP, posts WM_AI_RESPONSE_DONE to canvas
 //
-// The bridge thread NEVER touches Win32 UI. All UI updates go through
-// PostMessage so the UI thread drives all rendering.
+// The bridge thread NEVER calls Win32 UI functions directly.
+// All UI updates go through PostMessage so the UI thread drives rendering.
 // ---------------------------------------------------------------------------
 class AiBridge {
   public:
@@ -26,90 +26,76 @@ class AiBridge {
     ~AiBridge();
 
     // Call once from WinMain after main window is created.
-    // Spawns sidecar process; returns immediately (non-blocking).
-    // modelPath: absolute path to .gguf model file
-    // port: llama-server port (default 8080)
+    // Spawns sidecar; returns immediately (non-blocking).
+    // modelPath          : absolute path to .gguf model file
+    // llamaServerExePath : absolute path to llama-server.exe
+    // port               : llama-server port (default 8080)
     bool Init(const char* modelPath, const char* llamaServerExePath, int port = 8080);
 
-    // Call from WM_DESTROY handler on main window.
-    // Attempts graceful sidecar shutdown; falls back to forced kill on timeout.
+    // Call from main window WM_DESTROY.
+    // Attempts graceful sidecar shutdown; forces kill on timeout.
     void Shutdown();
 
-    // Thread-safe. Enqueue a new AI request from the UI thread.
-    // Returns assigned request_id (monotonically increasing, never reused).
+    // Thread-safe. Enqueue request from UI thread.
+    // Returns assigned request_id (monotonic, never reused in session).
     // Returns 0 if bridge is not initialized or shutting down.
     uint32_t EnqueueRequest(AiRequestType type, const char* selectedText,
                             const char* pageContext, HWND targetHwnd,
                             RECT anchorRect);
 
-    // Thread-safe. Cancel a request by id.
-    // Safe to call even if the request is already complete or not found.
-    // Late-arriving WM_AI_RESPONSE_DONE for a canceled id will be dropped
-    // by the UI handler via request_id verification.
+    // Thread-safe. Mark a queued request as canceled.
+    // No-op if already complete, failed, or not found.
     void CancelRequest(uint32_t requestId);
 
-    // Returns true if sidecar has signaled ready (health check passed).
+    // Returns true once sidecar health check has passed.
     bool IsReady() const;
 
   private:
-    // Bridge worker thread entry point
-    static DWORD WINAPI BridgeThreadProc(LPVOID param);
     void RunBridgeLoop();
 
     // Sidecar process management
-    bool SpawnSidecar(const char* llamaServerExePath, const char* modelPath, int port);
-    // Graceful shutdown: sends CTRL_BREAK, waits up to timeoutMs, then TerminateProcess
-    void ShutdownSidecar(DWORD timeoutMs = 3000);
+    bool SpawnSidecar(const char* exePath, const char* modelPath, int port);
+    void ShutdownSidecar(DWORD gracefulTimeoutMs = 3000);
+    bool WaitForSidecarReady(int maxWaitMs = 20000);
 
-    // Poll llama-server health endpoint until ready or timeout
-    bool WaitForSidecarReady(int maxWaitMs = 15000);
-
-    // Blocking HTTP POST to llama-server on bridge thread
-    // Fills responseOut with full completion text; returns false on failure
+    // HTTP POST to llama-server /completion; fills responseOut with body
     bool SendCompletionRequest(const AiRequest& req, str::Str& responseOut);
 
-    // Build prompt string from request type and text
-    // Keeps prompts minimal for Phase 1 latency
-    void BuildPrompt(const AiRequest& req, str::Str& promptOut) const;
-
-    // Serialize request to JSON body for llama-server /completion endpoint
+    // Prompt construction
+    void BuildPrompt(const AiRequest& req, str::Str& out) const;
     void BuildRequestJson(const str::Str& prompt, str::Str& jsonOut) const;
-
-    // Parse response JSON from llama-server; extract "content" field
     bool ParseCompletionResponse(const str::Str& jsonBody, str::Str& contentOut) const;
 
-    // --- Members ---
-
-    // Sidecar process handles (nullptr until SpawnSidecar succeeds)
+    // --- Sidecar handles ---
     HANDLE mSidecarProcess{nullptr};
-    HANDLE mSidecarProcessThread{nullptr};
+    HANDLE mSidecarThread{nullptr};
 
-    // Bridge worker thread
+    // --- Bridge thread handle ---
     HANDLE mBridgeThread{nullptr};
 
-    // Synchronization: bridge thread waits on both; queue work signals mQueueEvent
-    HANDLE mQueueEvent{nullptr};    // auto-reset; signaled when queue has items
-    HANDLE mShutdownEvent{nullptr}; // manual-reset; signaled to stop bridge thread
+    // --- Synchronization ---
+    // mQueueEvent  : auto-reset; signaled when queue gains a new item
+    // mShutdownEvent: manual-reset; signaled to stop bridge thread
+    HANDLE mQueueEvent{nullptr};
+    HANDLE mShutdownEvent{nullptr};
+    Mutex  mQueueLock;
 
-    // Request queue: UI thread pushes, bridge thread pops
-    // Protected by mQueueLock
-    Mutex        mQueueLock;
-    Vec<AiRequest> mQueue;
+    // Queue stores heap-allocated AiRequest* (AiRequest contains str::Str
+    // so is non-POD; must not be stored by value in Vec)
+    Vec<AiRequest*> mQueue;
 
-    // Monotonically increasing request ID counter
-    std::atomic<uint32_t> mNextRequestId{1};
+    // Monotonic request ID; incremented via InterlockedIncrement
+    volatile LONG mNextRequestId{0};
 
-    // Set to true once sidecar health check passes
-    std::atomic<bool> mSidecarReady{false};
+    // AtomicInt (volatile LONG): 0 = false, 1 = true
+    AtomicInt mSidecarReady{0};
+    AtomicInt mShuttingDown{0};
 
-    // Set to true once Shutdown() is called; EnqueueRequest returns 0
-    std::atomic<bool> mShuttingDown{false};
-
-    int  mPort{8080};
+    int      mPort{8080};
     str::Str mLlamaServerPath;
     str::Str mModelPath;
 };
 
-// Global singleton. Initialized in AppMain / WinMain; destroyed on exit.
-// AI-HOOK: extern declared here; defined in AiBridge.cpp
+// Global singleton — initialized in app startup; destroyed on exit.
+// AI-HOOK: defined in AiBridge.cpp
 extern AiBridge* gAiBridge;

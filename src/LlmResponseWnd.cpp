@@ -283,28 +283,27 @@ void DismissActiveLlmPopup() {
 
 void OnAiResponseDone(HWND canvasHwnd, WPARAM requestId, LPARAM msgPtr) {
     // AI-HOOK: stale-window protection (required even in Phase 1, per review)
-    // Take ownership of msg immediately; delete before any early return
-    std::unique_ptr<AiResponseMsg> msg(reinterpret_cast<AiResponseMsg*>(msgPtr));
-
+    // Take ownership immediately; we are responsible for deletion in all paths.
+    AiResponseMsg* msg = reinterpret_cast<AiResponseMsg*>(msgPtr);
     if (!msg) return;
 
-    // Verify the response belongs to the currently active request
+    // Verify the response belongs to the currently active popup.
     // If a new selection was made while inference was running, the popup
-    // either doesn't exist or has a different requestId — drop the response.
+    // either no longer exists or tracks a different requestId — drop.
     if (gActiveLlmResponseWnd) {
         if (gActiveLlmResponseWnd->GetRequestId() != (uint32_t)requestId) {
-            // Stale response — drop silently, ownership released by unique_ptr
-            logf("OnAiResponseDone: dropping stale response for req id=%u\n",
-                 (uint32_t)requestId);
+            logf("OnAiResponseDone: dropping stale response for req id=%u "
+                 "(active id=%u)\n",
+                 (uint32_t)requestId, gActiveLlmResponseWnd->GetRequestId());
+            delete msg;
             return;
         }
-        // Update existing popup
         if (msg->isError) {
             gActiveLlmResponseWnd->SetError(msg->text.Get());
         } else {
             gActiveLlmResponseWnd->SetResponseText(msg->text.Get());
         }
     }
-    // If no popup exists (was dismissed before response arrived) — just drop.
-    // unique_ptr destructs msg here.
+    // No popup exists (dismissed before response arrived) — drop silently.
+    delete msg;
 }
