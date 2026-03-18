@@ -54,6 +54,8 @@
 #include "Translations.h"
 
 #include "utils/Log.h"
+#include "AiBridge.h"       // AI-HOOK: Phase 1 LLM integration
+#include "LlmResponseWnd.h" // AI-HOOK: Phase 1 LLM response popup
 
 // if set instead of trying to render pages we don't have, we simply do nothing
 // this reduces the flickering when going quickly through pages but creates
@@ -2069,6 +2071,13 @@ static LRESULT WndProcCanvasFixedPageUI(MainWindow* win, HWND hwnd, UINT msg, WP
                 y = 0;
             }
             OnWindowContextMenu(win, x, y);
+            return 0;
+
+        // AI-HOOK: Phase 1 - receive completed AI response from bridge thread
+        // Stale-drop and ownership transfer handled inside OnAiResponseDone()
+        case WM_AI_RESPONSE_DONE:
+        case WM_AI_ERROR:
+            OnAiResponseDone(hwnd, wp, lp);
             return 0;
 
         case WM_GESTURE:

@@ -74,6 +74,11 @@ enum {
     CmdDebugTogglePredictiveRender = 387, CmdDebugToggleRtl = 388, CmdToggleAntiAlias = 389,
     CmdNone = 390,
 
+    // AI-HOOK: Phase 1 LLM integration commands
+    CmdAiAskSelection = 391,   // "Ask AI about this selection" (freeform)
+    CmdAiDefine       = 392,   // "Define" (single word)
+    CmdAiExplain      = 393,   // "Explain selection"
+
     /* range for file history */
     CmdFileHistoryFirst,
     CmdFileHistoryLast = CmdFileHistoryFirst + 32,

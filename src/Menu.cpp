@@ -46,6 +46,8 @@
 #include "Menu.h"
 
 #include "utils/Log.h"
+#include "AiBridge.h"      // AI-HOOK: Phase 1 LLM integration
+#include "LlmResponseWnd.h" // AI-HOOK: Phase 1 LLM response popup
 
 struct BuildMenuCtx {
     WindowTab* tab = nullptr;
@@ -1360,6 +1362,14 @@ HMENU BuildMenuFromDef(MenuDef* menuDef, HMENU menu, BuildMenuCtx* ctx) {
     // insert before built-in selection handlers
     if (menuDef == menuDefSelection) {
         AppendSelectionHandlersToMenu(menu, ctx ? ctx->hasSelection : false);
+    }
+
+    // AI-HOOK: Phase 1 - append AI commands to selection context menu
+    if (menuDef == menuDefSelection && ctx && ctx->hasSelection && gAiBridge && gAiBridge->IsReady()) {
+        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(menu, MF_STRING | MF_ENABLED, CmdAiDefine,       L"Define");
+        AppendMenuW(menu, MF_STRING | MF_ENABLED, CmdAiExplain,      L"Explain Selection");
+        AppendMenuW(menu, MF_STRING | MF_ENABLED, CmdAiAskSelection, L"Ask AI...");
     }
 
     if (menuDef == menuDefThemes) {

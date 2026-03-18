@@ -74,6 +74,8 @@
 #include "Print.h"
 #include "SearchAndDDE.h"
 #include "Selection.h"
+#include "AiBridge.h"       // AI-HOOK: Phase 1 LLM integration
+#include "LlmResponseWnd.h" // AI-HOOK: Phase 1 LLM response popup
 #include "StressTesting.h"
 #include "HomePage.h"
 #include "SumatraDialogs.h"
@@ -5940,6 +5942,42 @@ static LRESULT FrameOnCommand(MainWindow* win, HWND hwnd, UINT msg, WPARAM wp, L
         case CmdCopySelection:
             CopySelectionInTabToClipboard(tab);
             break;
+
+        // AI-HOOK: Phase 1 LLM command handlers
+        case CmdAiDefine:
+        case CmdAiExplain:
+        case CmdAiAskSelection: {
+            if (!gAiBridge || !gAiBridge->IsReady()) break;
+            if (!win->showSelection || !tab->selectionOnPage) break;
+
+            bool isTextOnly;
+            TempStr selText = GetSelectedTextTemp(tab, "\n", isTextOnly);
+            if (!selText || str::Len(selText) == 0) break;
+
+            // Get current page text for context injection (may be empty)
+            // AI-HOOK: GetCurrentPageTextTemp declared in Selection.h (to be added)
+            // For Phase 1 scaffold, we pass empty context; wire up in Phase 1.1
+            const char* pageCtx = "";
+
+            // Get anchor rect in screen coordinates for popup placement
+            RECT anchorRect = win->selectionRect;
+            MapWindowPoints(win->hwndCanvas, HWND_DESKTOP,
+                            (POINT*)&anchorRect, 2);
+
+            AiRequestType reqType = AiRequestType::Ask;
+            if (cmdId == CmdAiDefine)   reqType = AiRequestType::Define;
+            if (cmdId == CmdAiExplain)  reqType = AiRequestType::Explain;
+
+            // EnqueueRequest returns the assigned id atomically.
+            // Create popup after enqueue — shows "Asking AI..." immediately.
+            uint32_t assignedId = gAiBridge->EnqueueRequest(
+                reqType, selText, pageCtx, win->hwndCanvas, anchorRect);
+
+            if (assignedId != 0) {
+                LlmResponseWnd::Create(win->hwndCanvas, anchorRect, assignedId);
+                // Popup shows "Asking AI..." until WM_AI_RESPONSE_DONE arrives
+            }
+        } break;
 
         case CmdSelectAll:
             OnSelectAll(win);
