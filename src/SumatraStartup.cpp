@@ -75,6 +75,8 @@
 #include "CommandPalette.h"
 
 #include "utils/Log.h"
+#include "AiBridge.h"       // AI-HOOK: Phase 1 LLM integration
+#include "LlmResponseWnd.h" // AI-HOOK: Phase 1 LLM response popup
 
 // return false if failed in a way that should abort the app
 static NO_INLINE bool MaybeMakePluginWindow(MainWindow* win, HWND hwndParent) {
@@ -2596,6 +2598,27 @@ ContinueOpenWindow:
 
     BringWindowToTop(win->hwndFrame);
 
+    // AI-HOOK: Phase 1 — register popup window class and start sidecar if model present.
+    // Paths are hardcoded for dev testing; will be moved to settings in Phase 2.
+    // The bridge is completely optional: if init fails the app behaves normally.
+    LlmResponseWnd::RegisterWindowClass(hInstance);
+    {
+        const char* llamaExe   = "C:\\llama\\llama-server.exe";
+        const char* modelFile  = "C:\\llama\\models\\phi-3-mini.gguf";
+        if (file::Exists(llamaExe) && file::Exists(modelFile)) {
+            gAiBridge = new AiBridge();
+            if (!gAiBridge->Init(llamaExe, modelFile, 8080)) {
+                logf("AiBridge: Init failed — AI features disabled\n");
+                delete gAiBridge;
+                gAiBridge = nullptr;
+            } else {
+                logf("AiBridge: initialized, sidecar starting\n");
+            }
+        } else {
+            logf("AiBridge: llama-server or model not found — AI features disabled\n");
+        }
+    }
+
     StartDeleteStaleFiles();
 
     exitCode = RunMessageLoop();
@@ -2604,6 +2627,12 @@ ContinueOpenWindow:
 
 Exit:
     logf("Exiting with exit code: %d\n", exitCode);
+    // AI-HOOK: shut down bridge before OS cleanup
+    if (gAiBridge) {
+        gAiBridge->Shutdown();
+        delete gAiBridge;
+        gAiBridge = nullptr;
+    }
     UnregisterSettingsForFileChanges();
 
     HandleRedirectedConsoleOnShutdown();
