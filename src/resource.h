@@ -60,6 +60,7 @@
 #define IDC_SECTION_PRINT_COMPATIBILITY 1070
 #define IDC_TOC_LABEL_WITH_CLOSE        1101
 #define IDC_FAV_LABEL_WITH_CLOSE        1106
+#define IDC_AI_LABEL_WITH_CLOSE         1107
 #define IDB_RELOADING_CUE               2010
 
 #define IDC_STATIC                      -1

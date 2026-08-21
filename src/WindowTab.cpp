@@ -22,6 +22,7 @@
 #include "Selection.h"
 #include "Translations.h"
 #include "EditAnnotations.h"
+#include "AiRequest.h"
 
 #include "utils/Log.h"
 
@@ -47,6 +48,10 @@ WindowTab::~WindowTab() {
         AsChm()->RemoveParentHwnd();
     }
     delete selectionOnPage;
+    for (size_t i = 0; i < aiConversation.len; i++) {
+        delete aiConversation[i];
+    }
+    aiConversation.Reset();
     // technically we only need to clear ctrl == gMostRecentlyOpenedDoc
     // but gMostRecentlyOpenedDoc is only for dde commands
     // so doesn't need to be kept for long

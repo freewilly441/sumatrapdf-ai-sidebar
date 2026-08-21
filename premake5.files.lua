@@ -712,6 +712,9 @@ function sumatrapdf_files()
   files_in_dir("src", {
     "Accelerators.*",
     "Actions.*",
+    "AiBridge.*",
+    "AiRequest.h",
+    "AiSidebarWnd.*",
     "AppColors.*",
     "AppSettings.*",
     "AppTools.*",

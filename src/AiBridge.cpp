@@ -1,7 +1,7 @@
 /* Copyright 2024 the SumatraPDF project authors (see AUTHORS file).
    License: GPLv3 */
 
-// AI-HOOK: Phase 1 LLM integration bridge implementation
+// AI-HOOK: LLM integration bridge implementation (Ollama backend, Phase 2)
 
 #include "utils/BaseUtil.h"
 #include "utils/ThreadUtil.h"
@@ -10,7 +10,11 @@
 #include "utils/HttpUtil.h"
 #include "AiBridge.h"
 
-// wininet.h included via BaseUtil.h; wininet.lib linked via project
+// wininet.h included via BaseUtil.h; wininet.lib linked via project.
+// MinGW note: x86_64-w64-mingw32 ships wininet.h and libwininet.a, so this
+// compiles and links the same way under MinGW as under MSVC. Behavior here
+// is loopback-only HTTP with no proxy/TLS involved, so MSVC-vs-MinGW runtime
+// divergence risk is low; still worth a smoke test on real Windows.
 
 // ---------------------------------------------------------------------------
 // Global singleton
@@ -28,8 +32,8 @@ struct ScopedLock {
 
 // ---------------------------------------------------------------------------
 // Minimal JSON helpers — no external dependency.
-// Sufficient for building llama-server /completion requests and
-// extracting the "content" field from responses.
+// Sufficient for building Ollama /api/chat requests and extracting the
+// "message.content" field from responses.
 // ---------------------------------------------------------------------------
 
 static void JsonEscapeAppend(const char* s, str::Str& out) {
@@ -59,8 +63,6 @@ static bool JsonExtractString(const char* json, const char* key, str::Str& out) 
 
     const char* pos = str::Find(json, pat.Get());
     if (!pos) {
-        // Also try without space: some servers emit "key" : "
-        // (not needed for llama-server but defensive)
         return false;
     }
     pos += pat.size();
@@ -84,31 +86,56 @@ static bool JsonExtractString(const char* json, const char* key, str::Str& out) 
     return true;
 }
 
+// Parses "http://host:port" (scheme optional, port optional) into separate
+// host and port. Ollama defaults to port 11434 when none is given.
+static void ParseHostUrl(const char* url, str::Str& hostOut, int& portOut) {
+    portOut = 11434;
+    const char* p = url;
+    const char* schemeSep = str::Find(p, "://");
+    if (schemeSep) {
+        p = schemeSep + 3;
+    }
+    const char* colon = str::FindChar(p, ':');
+    if (colon) {
+        hostOut.Append(p, (size_t)(colon - p));
+        portOut = atoi(colon + 1);
+    } else {
+        // strip a trailing path/slash if present
+        const char* slash = str::FindChar(p, '/');
+        if (slash) {
+            hostOut.Append(p, (size_t)(slash - p));
+        } else {
+            hostOut.Append(p);
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
-// AiHttpPost
+// AiHttpRequest
 //
-// Self-contained WinInet POST with full response body capture.
-// Called on bridge thread only (blocking). Uses WinInet directly because
-// the existing HttpPost() in HttpUtil.cpp discards the response body.
-//
-// Sets a 60-second receive timeout to accommodate slow CPU inference.
+// Self-contained WinInet request with full response body capture.
+// Called on bridge thread only (blocking), except the initial readiness
+// check which also runs on the bridge thread before the loop starts.
+// Uses WinInet directly because the existing HttpGet()/HttpPost() in
+// HttpUtil.cpp discard the response body.
 // ---------------------------------------------------------------------------
-static bool AiHttpPost(const char* server, int port, const char* path,
-                       const str::Str& body, str::Str& responseOut) {
+static bool AiHttpRequest(const char* server, int port, const char* path, const char* method,
+                          const str::Str* body, str::Str& responseOut) {
     bool ok = false;
     HINTERNET hInet = nullptr, hConn = nullptr, hReq = nullptr;
     DWORD respCode = 0;
     DWORD respCodeSize = sizeof(DWORD);
-    DWORD timeoutMs = 60 * 1000;  // 60s: CPU inference can be slow
+    DWORD timeoutMs = 60 * 1000; // 60s: CPU inference and large-doc prompts can be slow
 
     WCHAR* serverW = ToWStrTemp(server);
     WCHAR* pathW   = ToWStrTemp(path);
+    WCHAR* methodW = ToWStrTemp(method);
 
     hInet = InternetOpenW(L"SumatraPDF-LLM",
                           INTERNET_OPEN_TYPE_PRECONFIG,
                           nullptr, nullptr, 0);
     if (!hInet) {
-        logf("AiHttpPost: InternetOpen failed (%d)\n", (int)GetLastError());
+        logf("AiHttpRequest: InternetOpen failed (%d)\n", (int)GetLastError());
         goto Exit;
     }
 
@@ -116,34 +143,31 @@ static bool AiHttpPost(const char* server, int port, const char* path,
                              nullptr, nullptr,
                              INTERNET_SERVICE_HTTP, 0, 0);
     if (!hConn) {
-        logf("AiHttpPost: InternetConnect failed (%d)\n", (int)GetLastError());
+        logf("AiHttpRequest: InternetConnect failed (%d)\n", (int)GetLastError());
         goto Exit;
     }
 
-    hReq = HttpOpenRequestW(hConn, L"POST", pathW,
+    hReq = HttpOpenRequestW(hConn, methodW, pathW,
                             nullptr, nullptr, nullptr,
                             INTERNET_FLAG_NO_UI | INTERNET_FLAG_NO_CACHE_WRITE |
                             INTERNET_FLAG_RELOAD,
                             0);
     if (!hReq) {
-        logf("AiHttpPost: HttpOpenRequest failed (%d)\n", (int)GetLastError());
+        logf("AiHttpRequest: HttpOpenRequest failed (%d)\n", (int)GetLastError());
         goto Exit;
     }
 
-    // Set generous timeouts — bridge thread is allowed to block
-    InternetSetOptionW(hReq, INTERNET_OPTION_SEND_TIMEOUT,
-                       &timeoutMs, sizeof(timeoutMs));
-    InternetSetOptionW(hReq, INTERNET_OPTION_RECEIVE_TIMEOUT,
-                       &timeoutMs, sizeof(timeoutMs));
+    InternetSetOptionW(hReq, INTERNET_OPTION_SEND_TIMEOUT, &timeoutMs, sizeof(timeoutMs));
+    InternetSetOptionW(hReq, INTERNET_OPTION_RECEIVE_TIMEOUT, &timeoutMs, sizeof(timeoutMs));
 
     {
-        const char* hdrs    = "Content-Type: application/json\r\n";
-        DWORD       hdrsLen = (DWORD)str::Len(hdrs);
-        void*       data    = (void*)body.Get();
-        DWORD       dataLen = (DWORD)body.size();
+        const char* hdrs    = body ? "Content-Type: application/json\r\n" : nullptr;
+        DWORD       hdrsLen = hdrs ? (DWORD)str::Len(hdrs) : 0;
+        void*       data    = body ? (void*)body->Get() : nullptr;
+        DWORD       dataLen = body ? (DWORD)body->size() : 0;
 
         if (!HttpSendRequestA(hReq, hdrs, hdrsLen, data, dataLen)) {
-            logf("AiHttpPost: HttpSendRequest failed (%d)\n", (int)GetLastError());
+            logf("AiHttpRequest: HttpSendRequest failed (%d)\n", (int)GetLastError());
             goto Exit;
         }
     }
@@ -153,16 +177,15 @@ static bool AiHttpPost(const char* server, int port, const char* path,
                    &respCode, &respCodeSize, nullptr);
 
     if (respCode != 200) {
-        logf("AiHttpPost: unexpected HTTP status %d\n", (int)respCode);
+        logf("AiHttpRequest: unexpected HTTP status %d\n", (int)respCode);
         goto Exit;
     }
 
-    // Read response body in chunks
     for (;;) {
         char   buf[4096];
         DWORD  dwRead = 0;
         if (!InternetReadFile(hReq, buf, sizeof(buf), &dwRead)) {
-            logf("AiHttpPost: InternetReadFile failed (%d)\n", (int)GetLastError());
+            logf("AiHttpRequest: InternetReadFile failed (%d)\n", (int)GetLastError());
             goto Exit;
         }
         if (dwRead == 0) break;
@@ -191,15 +214,6 @@ AiBridge::AiBridge() {
 AiBridge::~AiBridge() {
     // Shutdown() should have been called already.
     // Belt-and-suspenders: free anything remaining.
-    if (mSidecarProcess) {
-        TerminateProcess(mSidecarProcess, 0);
-        CloseHandle(mSidecarProcess);
-        mSidecarProcess = nullptr;
-    }
-    if (mSidecarThread) {
-        CloseHandle(mSidecarThread);
-        mSidecarThread = nullptr;
-    }
     if (mBridgeThread) {
         CloseHandle(mBridgeThread);
         mBridgeThread = nullptr;
@@ -212,7 +226,6 @@ AiBridge::~AiBridge() {
         CloseHandle(mShutdownEvent);
         mShutdownEvent = nullptr;
     }
-    // Drain any remaining queued requests
     ScopedLock lk(mQueueLock);
     for (size_t i = 0; i < mQueue.len; i++) {
         delete mQueue[i];
@@ -224,93 +237,23 @@ AiBridge::~AiBridge() {
 // Init
 // ---------------------------------------------------------------------------
 
-bool AiBridge::Init(const char* modelPath, const char* llamaServerExePath, int port) {
-    ReportIf(mBridgeThread);  // Must not call Init twice
+bool AiBridge::Init(const char* host, const char* model) {
+    ReportIf(mBridgeThread); // Must not call Init twice
 
-    mPort = port;
-    mModelPath.Set(modelPath);
-    mLlamaServerPath.Set(llamaServerExePath);
+    mHost.Set(host);
+    mModel.Set(model);
 
-    if (!SpawnSidecar(llamaServerExePath, modelPath, port)) {
-        logf("AiBridge::Init: SpawnSidecar failed\n");
-        return false;
-    }
-
-    // StartThread() from ThreadUtil.h: returns HANDLE, takes Func0 (not lambda)
     mBridgeThread = StartThread(MkMethod0<AiBridge, &AiBridge::RunBridgeLoop>(this), "AiBridge");
     ReportIf(!mBridgeThread);
 
-    logf("AiBridge::Init: bridge thread started (port %d)\n", port);
+    logf("AiBridge::Init: bridge thread started (host=%s model=%s)\n", host, model);
     return true;
 }
 
-// ---------------------------------------------------------------------------
-// Sidecar management
-// ---------------------------------------------------------------------------
-
-bool AiBridge::SpawnSidecar(const char* exePath, const char* modelPath, int port) {
-    // Command line:
-    // llama-server.exe -m "<model>" --port <N> --host 127.0.0.1 -np 1 -c 2048 --log-disable
-    str::Str cmdLine;
-    cmdLine.AppendChar('"');
-    cmdLine.Append(exePath);
-    cmdLine.Append("\" -m \"");
-    cmdLine.Append(modelPath);
-    cmdLine.AppendFmt("\" --port %d --host 127.0.0.1 -np 1 -c 2048 --log-disable", port);
-
-    TempWStr cmdLineW = ToWStrTemp(cmdLine.Get());
-
-    STARTUPINFOW si{};
-    si.cb = sizeof(si);
-    // Do NOT set STARTF_USESTDHANDLES — passing INVALID_HANDLE_VALUE as stdio
-    // handles causes CreateProcessW to fail with ERROR_INVALID_HANDLE.
-    // CREATE_NO_WINDOW already suppresses any console window.
-
-    PROCESS_INFORMATION pi{};
-    BOOL created = CreateProcessW(
-        nullptr, cmdLineW,
-        nullptr, nullptr,
-        FALSE, CREATE_NO_WINDOW,
-        nullptr, nullptr,
-        &si, &pi);
-
-    if (!created) {
-        logf("AiBridge::SpawnSidecar: CreateProcess failed (%d)\n",
-             (int)GetLastError());
-        return false;
-    }
-
-    mSidecarProcess = pi.hProcess;
-    mSidecarThread  = pi.hThread;
-    logf("AiBridge::SpawnSidecar: PID=%d\n", (int)pi.dwProcessId);
-    return true;
-}
-
-void AiBridge::ShutdownSidecar(DWORD gracefulTimeoutMs) {
-    if (!mSidecarProcess) return;
-
-    // Graceful path: CTRL_BREAK lets llama-server flush state
-    GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, GetProcessId(mSidecarProcess));
-
-    DWORD result = WaitForSingleObject(mSidecarProcess, gracefulTimeoutMs);
-    if (result != WAIT_OBJECT_0) {
-        logf("AiBridge::ShutdownSidecar: graceful timeout — forcing kill\n");
-        TerminateProcess(mSidecarProcess, 0);
-        WaitForSingleObject(mSidecarProcess, 2000);
-    }
-
-    CloseHandle(mSidecarProcess);
-    mSidecarProcess = nullptr;
-    if (mSidecarThread) {
-        CloseHandle(mSidecarThread);
-        mSidecarThread = nullptr;
-    }
-    logf("AiBridge::ShutdownSidecar: done\n");
-}
-
-bool AiBridge::WaitForSidecarReady(int maxWaitMs) {
-    str::Str url;
-    url.AppendFmt("http://127.0.0.1:%d/health", mPort);
+bool AiBridge::WaitForOllamaReady(int maxWaitMs) {
+    str::Str host;
+    int port;
+    ParseHostUrl(mHost.Get(), host, port);
 
     const int pollMs = 500;
     int elapsed = 0;
@@ -318,17 +261,17 @@ bool AiBridge::WaitForSidecarReady(int maxWaitMs) {
     while (elapsed < maxWaitMs) {
         if (AtomicIntGet(&mShuttingDown)) return false;
 
-        HttpRsp rsp;
-        if (HttpGet(url.Get(), &rsp) && IsHttpRspOk(&rsp)) {
-            logf("AiBridge::WaitForSidecarReady: ready after %dms\n", elapsed);
-            AtomicIntSet(&mSidecarReady, 1);
+        str::Str resp;
+        if (AiHttpRequest(host.Get(), port, "/api/tags", "GET", nullptr, resp)) {
+            logf("AiBridge::WaitForOllamaReady: ready after %dms\n", elapsed);
+            AtomicIntSet(&mOllamaReady, 1);
             return true;
         }
         Sleep(pollMs);
         elapsed += pollMs;
     }
 
-    logf("AiBridge::WaitForSidecarReady: timed out after %dms\n", maxWaitMs);
+    logf("AiBridge::WaitForOllamaReady: timed out after %dms — is Ollama running?\n", maxWaitMs);
     return false;
 }
 
@@ -348,8 +291,6 @@ void AiBridge::Shutdown() {
         CloseHandle(mBridgeThread);
         mBridgeThread = nullptr;
     }
-
-    ShutdownSidecar(3000);
     logf("AiBridge::Shutdown: complete\n");
 }
 
@@ -357,22 +298,22 @@ void AiBridge::Shutdown() {
 // EnqueueRequest / CancelRequest / IsReady
 // ---------------------------------------------------------------------------
 
-uint32_t AiBridge::EnqueueRequest(AiRequestType type, const char* selectedText,
-                                   const char* pageContext, HWND targetHwnd,
-                                   RECT anchorRect) {
+uint32_t AiBridge::EnqueueRequest(AiRequestType type, AiContextMode contextMode, const char* userMessage,
+                                   const char* contextText, const char* historyText, HWND targetHwnd) {
     if (AtomicIntGet(&mShuttingDown)) return 0;
 
     // Assign ID atomically; start at 1 so 0 is always "invalid"
     uint32_t id = (uint32_t)InterlockedIncrement(&mNextRequestId);
 
-    AiRequest* req   = new AiRequest();
-    req->id          = id;
-    req->type        = type;
-    req->selectedText.Set(selectedText ? selectedText : "");
-    req->pageContext.Set(pageContext   ? pageContext   : "");
-    req->targetHwnd  = targetHwnd;
-    req->anchorRect  = anchorRect;
-    req->state       = AiRequestState::Pending;
+    AiRequest* req    = new AiRequest();
+    req->id           = id;
+    req->type         = type;
+    req->contextMode  = contextMode;
+    req->userMessage.Set(userMessage ? userMessage : "");
+    req->contextText.Set(contextText ? contextText : "");
+    req->historyText.Set(historyText ? historyText : "");
+    req->targetHwnd   = targetHwnd;
+    req->state        = AiRequestState::Pending;
 
     {
         ScopedLock lk(mQueueLock);
@@ -380,7 +321,7 @@ uint32_t AiBridge::EnqueueRequest(AiRequestType type, const char* selectedText,
     }
 
     SetEvent(mQueueEvent);
-    logf("AiBridge::EnqueueRequest: id=%u type=%d\n", id, (int)type);
+    logf("AiBridge::EnqueueRequest: id=%u type=%d mode=%d\n", id, (int)type, (int)contextMode);
     return id;
 }
 
@@ -397,7 +338,7 @@ void AiBridge::CancelRequest(uint32_t requestId) {
 }
 
 bool AiBridge::IsReady() const {
-    return AtomicIntGet(const_cast<AtomicInt*>(&mSidecarReady)) != 0;
+    return AtomicIntGet(const_cast<AtomicInt*>(&mOllamaReady)) != 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -407,8 +348,8 @@ bool AiBridge::IsReady() const {
 void AiBridge::RunBridgeLoop() {
     SetThreadName("AiBridge");
 
-    if (!WaitForSidecarReady(20000)) {
-        logf("AiBridge::RunBridgeLoop: sidecar never ready — exiting\n");
+    if (!WaitForOllamaReady(20000)) {
+        logf("AiBridge::RunBridgeLoop: Ollama never became ready — exiting\n");
         return;
     }
 
@@ -418,22 +359,19 @@ void AiBridge::RunBridgeLoop() {
         DWORD w = WaitForMultipleObjects(2, waitHandles, FALSE, INFINITE);
 
         if (w == WAIT_OBJECT_0) {
-            // Shutdown event — exit loop
             logf("AiBridge::RunBridgeLoop: shutdown signal\n");
             break;
         }
-        if (w != WAIT_OBJECT_0 + 1) break;  // unexpected
+        if (w != WAIT_OBJECT_0 + 1) break; // unexpected
 
         // Drain all Pending items from the queue
         while (true) {
             if (AtomicIntGet(&mShuttingDown)) goto done;
 
-            // Pop one Pending request under lock; prune dead entries
             AiRequest* req = nullptr;
             {
                 ScopedLock lk(mQueueLock);
 
-                // Find oldest Pending
                 for (size_t i = 0; i < mQueue.len; i++) {
                     if (mQueue[i]->state == AiRequestState::Pending) {
                         req = mQueue[i];
@@ -442,7 +380,6 @@ void AiBridge::RunBridgeLoop() {
                     }
                 }
 
-                // Prune non-Pending entries (Canceled, Complete, Failed)
                 for (int i = (int)mQueue.len - 1; i >= 0; i--) {
                     AiRequestState s = mQueue[i]->state;
                     if (s != AiRequestState::Pending) {
@@ -452,19 +389,16 @@ void AiBridge::RunBridgeLoop() {
                 }
             }
 
-            if (!req) break;  // queue empty
+            if (!req) break; // queue empty
 
-            // Guard: state may have been set to Canceled while we were waiting
             if (req->state != AiRequestState::Pending) {
-                logf("AiBridge: req id=%u dropped (state=%d)\n",
-                     req->id, (int)req->state);
+                logf("AiBridge: req id=%u dropped (state=%d)\n", req->id, (int)req->state);
                 delete req;
                 continue;
             }
 
-            // --- Send to sidecar ---
             str::Str responseText;
-            bool ok = SendCompletionRequest(*req, responseText);
+            bool ok = SendChatRequest(*req, responseText);
 
             // -------------------------------------------------------------------
             // Memory ownership contract:
@@ -477,14 +411,12 @@ void AiBridge::RunBridgeLoop() {
             msg->requestId     = req->id;
             msg->isError       = !ok;
             msg->text.Set(ok ? responseText.Get()
-                             : "AI error — is the model loaded?");
+                             : "AI error — is Ollama running with the configured model pulled?");
 
             UINT  wm     = ok ? WM_AI_RESPONSE_DONE : WM_AI_ERROR;
-            BOOL  posted = PostMessage(req->targetHwnd, wm,
-                                       (WPARAM)req->id, (LPARAM)msg);
+            BOOL  posted = PostMessage(req->targetHwnd, wm, (WPARAM)req->id, (LPARAM)msg);
             if (!posted) {
-                logf("AiBridge: PostMessage failed for id=%u (HWND gone)\n",
-                     req->id);
+                logf("AiBridge: PostMessage failed for id=%u (HWND gone)\n", req->id);
                 delete msg;
             }
 
@@ -497,93 +429,80 @@ done:
 }
 
 // ---------------------------------------------------------------------------
-// HTTP + prompt logic
+// HTTP + message logic
 // ---------------------------------------------------------------------------
 
-bool AiBridge::SendCompletionRequest(const AiRequest& req, str::Str& responseOut) {
-    str::Str prompt;
-    BuildPrompt(req, prompt);
-
+bool AiBridge::SendChatRequest(const AiRequest& req, str::Str& responseOut) {
     str::Str jsonBody;
-    BuildRequestJson(prompt, jsonBody);
+    BuildMessagesJson(req, jsonBody);
+
+    str::Str host;
+    int port;
+    ParseHostUrl(mHost.Get(), host, port);
 
     str::Str rawResponse;
-    if (!AiHttpPost("127.0.0.1", mPort, "/completion", jsonBody, rawResponse)) {
-        logf("AiBridge::SendCompletionRequest: HTTP POST failed\n");
+    if (!AiHttpRequest(host.Get(), port, "/api/chat", "POST", &jsonBody, rawResponse)) {
+        logf("AiBridge::SendChatRequest: HTTP POST failed\n");
         return false;
     }
 
-    if (!ParseCompletionResponse(rawResponse, responseOut)) {
-        logf("AiBridge::SendCompletionRequest: parse failed. Body: %s\n",
-             rawResponse.Get());
+    if (!ParseChatResponse(rawResponse, responseOut)) {
+        logf("AiBridge::SendChatRequest: parse failed. Body: %s\n", rawResponse.Get());
         return false;
     }
 
     return true;
 }
 
-void AiBridge::BuildPrompt(const AiRequest& req, str::Str& out) const {
-    // Phi-3 / Llama-3.2 instruction format.
-    // Tokens: kept minimal for Phase 1 latency. Define: ~100 in / ~80 out.
-    switch (req.type) {
-        case AiRequestType::Define:
-            out.Append("<|system|>You are a dictionary. "
-                       "Define the given term in 1-2 sentences. Be concise.<|end|>\n"
-                       "<|user|>Define: ");
-            out.Append(req.selectedText.Get());
-            out.Append("<|end|>\n<|assistant|>");
-            break;
-
-        case AiRequestType::Explain:
-            out.Append("<|system|>You are a reading assistant. "
-                       "Explain the following passage briefly.<|end|>\n"
-                       "<|user|>");
-            if (req.pageContext.size() > 0) {
-                out.Append("Document context:\n");
-                // Cap page context to stay within Phase 1 token budget
-                size_t ctxLen = (req.pageContext.size() < 1200)
-                              ? req.pageContext.size() : 1200;
-                out.Append(req.pageContext.Get(), ctxLen);
-                out.Append("\n\nNow explain this selection:\n");
-            } else {
-                out.Append("Explain: ");
-            }
-            out.Append(req.selectedText.Get());
-            out.Append("<|end|>\n<|assistant|>");
-            break;
-
-        case AiRequestType::Ask:
-        default:
-            out.Append("<|system|>You are a helpful reading assistant "
-                       "for PDF documents.<|end|>\n<|user|>");
-            if (req.pageContext.size() > 0) {
-                out.Append("Document context:\n");
-                size_t ctxLen = (req.pageContext.size() < 1200)
-                              ? req.pageContext.size() : 1200;
-                out.Append(req.pageContext.Get(), ctxLen);
-                out.Append("\n\nQuestion about the selection:\n");
-            }
-            out.Append(req.selectedText.Get());
-            out.Append("<|end|>\n<|assistant|>");
-            break;
+// Builds the Ollama /api/chat payload:
+//   {"model": "...", "stream": false, "messages": [{"role":"system"|"user"|"assistant", "content":"..."}]}
+//
+// System instruction depends on req.type; contextText (selection/page/document,
+// already extracted+capped by the caller) is folded into the first user turn;
+// historyText (prior turns, pre-formatted by the sidebar) is sent as a single
+// preceding user/assistant-tagged block since we don't keep a structured
+// multi-message history across requests yet — cheap and good enough for now,
+// revisit if it costs too many tokens on long conversations.
+void AiBridge::BuildMessagesJson(const AiRequest& req, str::Str& jsonOut) const {
+    const char* systemPrompt = "You are a helpful reading assistant embedded in a PDF viewer.";
+    if (req.type == AiRequestType::Define) {
+        systemPrompt = "You are a dictionary. Define the given term in 1-2 sentences. Be concise.";
+    } else if (req.type == AiRequestType::Explain) {
+        systemPrompt = "You are a reading assistant. Explain the given passage briefly.";
     }
+
+    jsonOut.AppendFmt("{\"model\":\"");
+    JsonEscapeAppend(mModel.Get(), jsonOut);
+    jsonOut.Append("\",\"stream\":false,\"messages\":[");
+
+    jsonOut.Append("{\"role\":\"system\",\"content\":\"");
+    JsonEscapeAppend(systemPrompt, jsonOut);
+    jsonOut.Append("\"}");
+
+    if (req.historyText.size() > 0) {
+        jsonOut.Append(",{\"role\":\"user\",\"content\":\"");
+        JsonEscapeAppend("Earlier in this conversation:\n", jsonOut);
+        JsonEscapeAppend(req.historyText.Get(), jsonOut);
+        jsonOut.Append("\"}");
+    }
+
+    jsonOut.Append(",{\"role\":\"user\",\"content\":\"");
+    if (req.contextText.size() > 0) {
+        const char* label = "Selected text";
+        if (req.contextMode == AiContextMode::Page) label = "Current page";
+        if (req.contextMode == AiContextMode::Document) label = "Document";
+        JsonEscapeAppend(label, jsonOut);
+        JsonEscapeAppend(":\n", jsonOut);
+        JsonEscapeAppend(req.contextText.Get(), jsonOut);
+        JsonEscapeAppend("\n\n", jsonOut);
+    }
+    JsonEscapeAppend(req.userMessage.Get(), jsonOut);
+    jsonOut.Append("\"}");
+
+    jsonOut.Append("]}");
 }
 
-void AiBridge::BuildRequestJson(const str::Str& prompt, str::Str& jsonOut) const {
-    // llama-server /completion payload
-    // n_predict: 256 — sufficient for definitions and short explanations
-    // stream: false — Phase 1 is single-shot response only
-    jsonOut.Append("{\"prompt\":\"");
-    JsonEscapeAppend(prompt.Get(), jsonOut);
-    jsonOut.Append("\","
-                   "\"n_predict\":256,"
-                   "\"stream\":false,"
-                   "\"temperature\":0.7,"
-                   "\"stop\":[\"<|end|>\",\"<|user|>\"]}");
-}
-
-bool AiBridge::ParseCompletionResponse(const str::Str& jsonBody,
-                                        str::Str& contentOut) const {
-    // llama-server /completion response: { "content": "...", ... }
+bool AiBridge::ParseChatResponse(const str::Str& jsonBody, str::Str& contentOut) const {
+    // Ollama /api/chat (stream:false) response: { "message": { "role": "assistant", "content": "..." }, ... }
     return JsonExtractString(jsonBody.Get(), "content", contentOut);
 }

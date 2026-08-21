@@ -2,8 +2,8 @@
    License: GPLv3 */
 
 #include "utils/BaseUtil.h"
-#include <UIAutomationCore.h>
-#include <UIAutomationCoreApi.h>
+#include <uiautomationcore.h>
+#include <uiautomationcoreapi.h>
 #include "utils/ScopedWin.h"
 #include "utils/FileUtil.h"
 #include "utils/WinUtil.h"
@@ -156,6 +156,13 @@ MainWindow::~MainWindow() {
     delete favSplitter;
     delete tocLabelWithClose;
     delete favLabelWithClose;
+
+    delete aiSplitter;
+    delete aiLabelWithClose;
+    delete aiModeDropDown;
+    delete aiHistoryEdit;
+    delete aiInputEdit;
+    delete aiSendButton;
 }
 
 void ClearMouseState(MainWindow* win) {
@@ -692,6 +699,13 @@ void UpdateControlsColors(MainWindow* win) {
         SetWindowExStyle(favTreeView->hwnd, WS_EX_STATICEDGE, !flatTreeWnd);
         uint flags = SWP_NOSIZE | SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED;
         SetWindowPos(favTreeView->hwnd, nullptr, 0, 0, 0, 0, flags);
+    }
+
+    if (win->hwndAiBox) {
+        win->aiLabelWithClose->SetColors(txtCol, bgCol);
+        win->aiHistoryEdit->SetColors(txtCol, bgCol);
+        win->aiInputEdit->SetColors(txtCol, bgCol);
+        win->aiSplitter->SetColors(kColorNoChange, splitterCol);
     }
     // TODO: more work needed to to ensure consistent look of the ebook window:
     // - change the tree item text color

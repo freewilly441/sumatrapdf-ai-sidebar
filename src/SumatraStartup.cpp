@@ -75,8 +75,8 @@
 #include "CommandPalette.h"
 
 #include "utils/Log.h"
-#include "AiBridge.h"       // AI-HOOK: Phase 1 LLM integration
-#include "LlmResponseWnd.h" // AI-HOOK: Phase 1 LLM response popup
+#include "AiBridge.h"     // AI-HOOK: LLM integration bridge
+#include "AiSidebarWnd.h" // AI-HOOK: AI chat sidebar panel
 
 // return false if failed in a way that should abort the app
 static NO_INLINE bool MaybeMakePluginWindow(MainWindow* win, HWND hwndParent) {
@@ -2598,32 +2598,23 @@ ContinueOpenWindow:
 
     BringWindowToTop(win->hwndFrame);
 
-    // AI-HOOK: Phase 1 — register popup window class and start sidecar if model present.
-    // Paths are hardcoded for dev testing; will be moved to settings in Phase 2.
-    // The bridge is completely optional: if init fails the app behaves normally.
-    LlmResponseWnd::RegisterWindowClass(hInstance);
+    // AI-HOOK: register the chat sidebar window class and start the Ollama
+    // bridge using settings (see AiSettings in Settings.h / SumatraPDF-settings.txt).
+    // The bridge is completely optional: if Ollama isn't reachable, IsReady()
+    // just stays false and the sidebar shows a "not connected" state.
+    AiSidebarWnd::RegisterWindowClass(hInstance);
     {
-        const char* llamaExe   = "C:\\llama\\llama-server.exe";
-        const char* modelFile  = "C:\\llama\\models\\phi-3-mini.gguf";
-        logf("AiBridge startup: checking paths\n");
-        logf("  llamaExe  = '%s' exists=%d\n", llamaExe,  (int)file::Exists(llamaExe));
-        logf("  modelFile = '%s' exists=%d\n", modelFile, (int)file::Exists(modelFile));
-        if (file::Exists(llamaExe) && file::Exists(modelFile)) {
-            gAiBridge = new AiBridge();
-            logf("AiBridge: allocated gAiBridge=%p\n", (void*)gAiBridge);
-            bool initOk = gAiBridge->Init(llamaExe, modelFile, 8080);
-            logf("AiBridge: Init() returned %d\n", (int)initOk);
-            if (!initOk) {
-                logf("AiBridge: Init failed — AI features disabled\n");
-                delete gAiBridge;
-                gAiBridge = nullptr;
-            } else {
-                logf("AiBridge: initialized, bridge thread started, sidecar launching\n");
-            }
+        const char* host  = gGlobalPrefs->aiSettings.ollamaHost;
+        const char* model = gGlobalPrefs->aiSettings.ollamaModel;
+        gAiBridge = new AiBridge();
+        bool initOk = gAiBridge->Init(host, model);
+        if (!initOk) {
+            logf("AiBridge: Init failed — AI features disabled\n");
+            delete gAiBridge;
+            gAiBridge = nullptr;
         } else {
-            logf("AiBridge: path check failed — AI features disabled\n");
+            logf("AiBridge: initialized, bridge thread started (host=%s model=%s)\n", host, model);
         }
-        logf("AiBridge startup done: gAiBridge=%p\n", (void*)gAiBridge);
     }
 
     StartDeleteStaleFiles();

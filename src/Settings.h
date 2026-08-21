@@ -233,6 +233,22 @@ struct Theme {
     bool colorizeControls;
 };
 
+// customization options for the AI chat sidebar
+struct AiSettings {
+    // backend to use: "ollama" (only supported value for now; kept as a
+    // string so a future backend can be added without a settings format change)
+    char* backend;
+    // Ollama server URL
+    char* ollamaHost;
+    // name of the Ollama model to use for chat (must already be pulled,
+    // e.g. via "ollama pull llama3.2")
+    char* ollamaModel;
+    // if true, the AI chat sidebar is shown
+    bool sidebarVisible;
+    // width of the AI chat sidebar panel
+    int sidebarDx;
+};
+
 // Values which are persisted for bookmarks/favorites
 struct Favorite {
     // name of this favorite as shown in the menu
@@ -489,6 +505,8 @@ struct GlobalPrefs {
     Vec<Shortcut*>* shortcuts;
     // color themes
     Vec<Theme*>* themes;
+    // customization options for the AI chat sidebar
+    AiSettings aiSettings;
     // passwords to try when opening a password protected document
     Vec<char*>* defaultPasswords;
     // ISO code of the current UI language
@@ -671,6 +689,16 @@ static const FieldInfo gRectFields[] = {
 };
 static const StructInfo gRectInfo = {sizeof(Rect), 4, gRectFields, "X\0Y\0Dx\0Dy"};
 
+static const FieldInfo gAiSettingsFields[] = {
+    {offsetof(AiSettings, backend), SettingType::String, (intptr_t)"ollama"},
+    {offsetof(AiSettings, ollamaHost), SettingType::String, (intptr_t)"http://localhost:11434"},
+    {offsetof(AiSettings, ollamaModel), SettingType::String, (intptr_t)"llama3.2"},
+    {offsetof(AiSettings, sidebarVisible), SettingType::Bool, false},
+    {offsetof(AiSettings, sidebarDx), SettingType::Int, 0},
+};
+static const StructInfo gAiSettingsInfo = {sizeof(AiSettings), 5, gAiSettingsFields,
+                                           "Backend\0OllamaHost\0OllamaModel\0SidebarVisible\0SidebarDx"};
+
 static const FieldInfo gFavoriteFields[] = {
     {offsetof(Favorite, name), SettingType::String, 0},
     {offsetof(Favorite, pageNo), SettingType::Int, 0},
@@ -828,6 +856,8 @@ static const FieldInfo gGlobalPrefsFields[] = {
     {(size_t)-1, SettingType::Comment, 0},
     {offsetof(GlobalPrefs, themes), SettingType::Array, (intptr_t)&gThemeInfo},
     {(size_t)-1, SettingType::Comment, 0},
+    {offsetof(GlobalPrefs, aiSettings), SettingType::Struct, (intptr_t)&gAiSettingsInfo},
+    {(size_t)-1, SettingType::Comment, 0},
     {(size_t)-1, SettingType::Comment, (intptr_t)"You're not expected to change those manually"},
     {offsetof(GlobalPrefs, defaultPasswords), SettingType::StringArray, 0},
     {offsetof(GlobalPrefs, uiLanguage), SettingType::String, 0},
@@ -843,7 +873,7 @@ static const FieldInfo gGlobalPrefsFields[] = {
     {(size_t)-1, SettingType::Comment, (intptr_t)"Settings below are not recognized by the current version"},
 };
 static const StructInfo gGlobalPrefsInfo = {
-    sizeof(GlobalPrefs), 78, gGlobalPrefsFields,
+    sizeof(GlobalPrefs), 80, gGlobalPrefsFields,
     "\0\0CheckForUpdates\0CustomScreenDPI\0DefaultDisplayMode\0DefaultZoom\0EnableTeXEnhancements\0EscToExit\0FullPathI"
     "nTitle\0InverseSearchCmdLine\0LazyLoading\0MainWindowBackground\0NoHomeTab\0HomePageSortByFrequentlyRead\0ReloadMo"
     "difiedDocuments\0RememberOpenedFiles\0RememberStatePerDocument\0RestoreSession\0ReuseInstance\0ShowMenubar\0ShowTo"
@@ -851,8 +881,8 @@ static const StructInfo gGlobalPrefsInfo = {
     "lOverScrollbar\0PreventSleepInFullscreen\0TabWidth\0Theme\0TocDy\0ToolbarSize\0TreeFontName\0TreeFontSize\0UIFontS"
     "ize\0DisableAntiAlias\0UseSysColors\0UseTabs\0ZoomLevels\0ZoomIncrement\0\0FixedPageUI\0\0EBookUI\0\0ComicBookUI\0"
     "\0ChmUI\0\0Annotations\0\0ExternalViewers\0\0ForwardSearch\0\0PrinterDefaults\0\0SelectionHandlers\0\0Shortcuts\0"
-    "\0Themes\0\0\0DefaultPasswords\0UiLanguage\0VersionToSkip\0WindowState\0WindowPos\0FileStates\0SessionData\0Reopen"
-    "Once\0TimeOfLastUpdateCheck\0OpenCountWeek\0\0"};
+    "\0Themes\0\0AiSettings\0\0\0DefaultPasswords\0UiLanguage\0VersionToSkip\0WindowState\0WindowPos\0FileStates\0Sessio"
+    "nData\0ReopenOnce\0TimeOfLastUpdateCheck\0OpenCountWeek\0\0"};
 static const FieldInfo gTheme_1_Fields[] = {
     {offsetof(Theme, name), SettingType::String, (intptr_t)""},
     {offsetof(Theme, textColor), SettingType::Color, (intptr_t)""},

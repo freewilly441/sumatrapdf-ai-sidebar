@@ -46,9 +46,8 @@
 #include "Menu.h"
 
 #include "utils/Log.h"
-#include "utils/ThreadUtil.h"  // AI-HOOK: required before AiBridge.h (Mutex)
-#include "AiBridge.h"          // AI-HOOK: Phase 1 LLM integration
-#include "LlmResponseWnd.h"    // AI-HOOK: Phase 1 LLM response popup
+#include "utils/ThreadUtil.h" // AI-HOOK: required before AiBridge.h (Mutex)
+#include "AiBridge.h"         // AI-HOOK: LLM integration bridge
 
 struct BuildMenuCtx {
     WindowTab* tab = nullptr;
@@ -273,6 +272,10 @@ static MenuDef menuDefView[] = {
     {
         _TRN("Show Book&marks"),
         CmdToggleBookmarks,
+    },
+    {
+        _TRN("Show &AI Chat Sidebar"),
+        CmdToggleAiSidebar,
     },
     {
         _TRN("Show &Toolbar"),
@@ -1365,16 +1368,18 @@ HMENU BuildMenuFromDef(MenuDef* menuDef, HMENU menu, BuildMenuCtx* ctx) {
         AppendSelectionHandlersToMenu(menu, ctx ? ctx->hasSelection : false);
     }
 
-    // AI-HOOK: Phase 1 - append AI commands to selection context menu
-    // DIAGNOSTIC: unconditional insertion — confirms this code path is live.
-    // gAiBridge gating and hasSelection gating are removed for testing.
-    // Restore gating once items are confirmed visible.
-    if (menuDef == menuDefSelection) {
-        logf("AI menu: BuildMenuFromDef reached menuDefSelection — inserting items unconditionally\n");
+    // AI-HOOK: append AI commands to selection context menu.
+    // Whole group is omitted if the AI backend isn't reachable (mirrors how
+    // e.g. CanSendEmail/SupportsAnnotations gate other groups below); items
+    // are individually grayed out if there's no active selection, same as
+    // the disableIfNoSelection list further down.
+    if (menuDef == menuDefSelection && gAiBridge && gAiBridge->IsReady()) {
+        bool hasSel = ctx && ctx->hasSelection;
+        UINT selFlags = MF_STRING | (hasSel ? MF_ENABLED : (MF_ENABLED | MF_GRAYED));
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(menu, MF_STRING | MF_ENABLED, CmdAiDefine,       L"Define");
-        AppendMenuW(menu, MF_STRING | MF_ENABLED, CmdAiExplain,      L"Explain Selection");
-        AppendMenuW(menu, MF_STRING | MF_ENABLED, CmdAiAskSelection, L"Ask AI...");
+        AppendMenuW(menu, selFlags, CmdAiDefine,       L"Define");
+        AppendMenuW(menu, selFlags, CmdAiExplain,      L"Explain Selection");
+        AppendMenuW(menu, selFlags, CmdAiAskSelection, L"Ask AI...");
     }
 
     if (menuDef == menuDefThemes) {
@@ -1660,6 +1665,7 @@ static void MenuUpdateStateForWindow(MainWindow* win) {
     MenuSetChecked(win->menu, CmdToggleBookmarks, checked);
 
     MenuSetChecked(win->menu, CmdFavoriteToggle, gGlobalPrefs->showFavorites);
+    MenuSetChecked(win->menu, CmdToggleAiSidebar, win->aiVisible);
     MenuSetChecked(win->menu, CmdToggleToolbar, gGlobalPrefs->showToolbar);
     MenuSetChecked(win->menu, CmdToggleScrollbars, !gGlobalPrefs->fixedPageUI.hideScrollbars);
     MenuUpdateDisplayMode(win);
@@ -1911,16 +1917,14 @@ void OnWindowContextMenu(MainWindow* win, int x, int y) {
         case CmdSaveAnnotationsNewFile:
         case CmdFavoriteAdd:
         case CmdToggleFullscreen:
-        // AI-HOOK: Phase 1 — route AI commands to FrameOnCommand.
+        // AI-HOOK: route AI commands to FrameOnCommand.
         // TrackPopupMenu uses TPM_RETURNCMD so no WM_COMMAND is auto-posted;
         // we must explicitly forward via HwndSendCommand for any command that
         // is handled in FrameOnCommand rather than handled locally here.
         case CmdAiAskSelection:
         case CmdAiDefine:
         case CmdAiExplain: {
-            // handle in FrameOnCommand() in SumatraPDF.cpp
-            logf("OnWindowContextMenu: forwarding cmdId=%d to hwndFrame=%p\n",
-                 cmdId, (void*)win->hwndFrame);
+            // handled in FrameOnCommand() in SumatraPDF.cpp
             HwndSendCommand(win->hwndFrame, cmdId);
         } break;
 
