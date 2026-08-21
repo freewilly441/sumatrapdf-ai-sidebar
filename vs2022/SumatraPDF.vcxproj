@@ -1154,7 +1154,7 @@
     <ClCompile Include="..\src\HtmlFormatter.cpp" />
     <ClCompile Include="..\src\Installer.cpp" />
     <ClCompile Include="..\src\InstallerCommon.cpp" />
-    <ClCompile Include="..\src\LlmResponseWnd.cpp" />
+    <ClCompile Include="..\src\AiSidebarWnd.cpp" />
     <ClCompile Include="..\src\MainWindow.cpp" />
     <ClCompile Include="..\src\Menu.cpp" />
     <ClCompile Include="..\src\MobiDoc.cpp" />

@@ -74,10 +74,11 @@ enum {
     CmdDebugTogglePredictiveRender = 387, CmdDebugToggleRtl = 388, CmdToggleAntiAlias = 389,
     CmdNone = 390,
 
-    // AI-HOOK: Phase 1 LLM integration commands
-    CmdAiAskSelection = 391,   // "Ask AI about this selection" (freeform)
-    CmdAiDefine       = 392,   // "Define" (single word)
-    CmdAiExplain      = 393,   // "Explain selection"
+    // AI-HOOK: LLM integration commands
+    CmdAiAskSelection    = 391, // focuses the AI sidebar input, in Selection mode
+    CmdAiDefine          = 392, // "Define" quick action (single word)
+    CmdAiExplain         = 393, // "Explain selection" quick action
+    CmdToggleAiSidebar   = 394, // show/hide the AI chat sidebar
 
     /* range for file history */
     CmdFileHistoryFirst,

@@ -10,6 +10,9 @@ struct LabelWithCloseWnd;
 struct Splitter;
 struct Tooltip;
 struct TreeView;
+struct DropDown;
+struct Edit;
+struct Button;
 struct CaptionInfo;
 struct TabsCtrl;
 
@@ -127,6 +130,19 @@ struct MainWindow {
 
     // horizontal splitter for resizing favorites and bookmars parts
     Splitter* favSplitter = nullptr;
+
+    // state related to the AI chat sidebar (docked at the right)
+    HWND hwndAiBox = nullptr;
+    UINT_PTR aiBoxSubclassId = 0;
+    LabelWithCloseWnd* aiLabelWithClose = nullptr;
+    DropDown* aiModeDropDown = nullptr;
+    Edit* aiHistoryEdit = nullptr; // read-only, shows the conversation so far
+    Edit* aiInputEdit = nullptr;   // where the user types their message
+    Button* aiSendButton = nullptr;
+    // whether the AI chat sidebar is currently visible
+    bool aiVisible = false;
+    // vertical splitter for resizing the AI sidebar
+    Splitter* aiSplitter = nullptr;
 
     TabsCtrl* tabsCtrl = nullptr;
     bool tabsVisible = false;

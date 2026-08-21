@@ -74,8 +74,8 @@
 #include "Print.h"
 #include "SearchAndDDE.h"
 #include "Selection.h"
-#include "AiBridge.h"       // AI-HOOK: Phase 1 LLM integration
-#include "LlmResponseWnd.h" // AI-HOOK: Phase 1 LLM response popup
+#include "AiBridge.h"     // AI-HOOK: LLM integration bridge
+#include "AiSidebarWnd.h" // AI-HOOK: AI chat sidebar panel
 #include "StressTesting.h"
 #include "HomePage.h"
 #include "SumatraDialogs.h"
@@ -140,6 +140,7 @@ static StrVec gNextPrevDirCache; // cached files in gNextPrevDir
 static void CloseDocumentInCurrentTab(MainWindow*, bool keepUIEnabled, bool deleteModel);
 static void OnSidebarSplitterMove(Splitter::MoveEvent*);
 static void OnFavSplitterMove(Splitter::MoveEvent*);
+static void OnAiSplitterMove(Splitter::MoveEvent*);
 
 EBookUI* GetEBookUI() {
     if (!gGlobalPrefs) return nullptr;
@@ -524,6 +525,9 @@ void RememberDefaultWindowPosition(MainWindow* win) {
     }
 
     gGlobalPrefs->sidebarDx = WindowRect(win->hwndTocBox).dx;
+    if (win->hwndAiBox) {
+        gGlobalPrefs->aiSettings.sidebarDx = WindowRect(win->hwndAiBox).dx;
+    }
 
     /* don't update the window's dimensions if it is maximized, mimimized or fullscreened */
     if (WIN_STATE_NORMAL == gGlobalPrefs->windowState && !IsIconic(win->hwndFrame) && !win->presentation) {
@@ -1317,6 +1321,7 @@ static void ReplaceDocumentInCurrentTab(LoadArgs* args, DocController* ctrl, Fil
     // ReportIf(win->IsDocLoaded() && args->showWin && win->canvasRc.IsEmpty() && !win->AsChm());
 
     SetSidebarVisibility(win, showToc, gGlobalPrefs->showFavorites);
+    SetAiSidebarVisibility(win, gGlobalPrefs->aiSettings.sidebarVisible);
     // restore scroll state after the canvas size has been restored
     if ((args->showWin || ss.page != 1) && win->AsFixed()) {
         win->AsFixed()->SetScrollState(ss);
@@ -1478,6 +1483,17 @@ static void CreateSidebar(MainWindow* win) {
     }
 
     CreateFavorites(win);
+
+    {
+        Splitter::CreateArgs args;
+        args.parent = win->hwndFrame;
+        args.type = SplitterType::Vert;
+        win->aiSplitter = new Splitter();
+        win->aiSplitter->onMove = MkFunc1Void(OnAiSplitterMove);
+        win->aiSplitter->Create(args);
+    }
+
+    CreateAiSidebar(win);
 
     if (win->tocVisible) {
         HwndRepaintNow(win->hwndTocBox);
@@ -2165,6 +2181,9 @@ void LoadModelIntoTab(WindowTab* tab) {
         SetSidebarVisibility(win, tab->showTocPresentation, gGlobalPrefs->showFavorites);
     } else {
         SetSidebarVisibility(win, tab->showToc, gGlobalPrefs->showFavorites);
+    }
+    if (win->aiVisible) {
+        LoadAiConversationIntoSidebar(win);
     }
 
     DisplayModel* dm = win->AsFixed();
@@ -3645,7 +3664,7 @@ constexpr int kSplitterDy = 4;
 constexpr int kSidebarMinDx = 150;
 constexpr int kTocMinDy = 100;
 
-static void RelayoutFrame(MainWindow* win, bool updateToolbars = true, int sidebarDx = -1) {
+static void RelayoutFrame(MainWindow* win, bool updateToolbars = true, int sidebarDx = -1, int aiSidebarDx = -1) {
     Rect rc = ClientRect(win->hwndFrame);
     // don't relayout while the window is minimized
     if (rc.IsEmpty()) {
@@ -3766,6 +3785,31 @@ static void RelayoutFrame(MainWindow* win, bool updateToolbars = true, int sideb
 
         rc.x += toc.dx + kSplitterDx;
         rc.dx -= toc.dx + kSplitterDx;
+    }
+
+    // AI chat sidebar at the right
+    if (win->aiVisible) {
+        int aiDx = ClientRect(win->hwndAiBox).Size().dx;
+        if (aiSidebarDx > 0) {
+            aiDx = aiSidebarDx;
+        }
+        if (0 == aiDx) {
+            aiDx = gGlobalPrefs->aiSettings.sidebarDx;
+        }
+        if (0 == aiDx) {
+            aiDx = rc.dx / 4;
+        }
+        // note: requires the main frame be at least 2 * kSidebarMinDx wide,
+        // same assumption RelayoutFrame already makes for the left sidebar
+        aiDx = limitValue(aiDx, kSidebarMinDx, rc.dx / 2);
+
+        Rect rAi(rc.x + rc.dx - aiDx, rc.y, aiDx, rc.dy);
+        dh.MoveWindow(win->hwndAiBox, rAi);
+
+        Rect rSplitAi(rc.x + rc.dx - aiDx - kSplitterDx, rc.y, kSplitterDx, rc.dy);
+        dh.MoveWindow(win->aiSplitter->hwnd, rSplitAi);
+
+        rc.dx -= aiDx + kSplitterDx;
     }
 
     dh.MoveWindow(win->hwndCanvas, rc);
@@ -4766,6 +4810,27 @@ static void OnFavSplitterMove(Splitter::MoveEvent* ev) {
     RelayoutFrame(win, false, rToc.dx);
 }
 
+static void OnAiSplitterMove(Splitter::MoveEvent* ev) {
+    Splitter* splitter = ev->w;
+    HWND hwnd = splitter->hwnd;
+    MainWindow* win = FindMainWindowByHwnd(hwnd);
+
+    Rect rFrame = ClientRect(win->hwndFrame);
+    Point pcur = HwndGetCursorPos(win->hwndFrame);
+    int aiDx = rFrame.dx - pcur.x; // without splitter; panel is docked at the right
+
+    // make sure to keep this in sync with the calculations in RelayoutFrame
+    Rect rAi = ClientRect(win->hwndAiBox);
+    int minDx = std::min(kSidebarMinDx, rAi.dx);
+    int maxDx = std::max(rFrame.dx / 2, rAi.dx);
+    if (aiDx < minDx || aiDx > maxDx) {
+        ev->resizeAllowed = false;
+        return;
+    }
+
+    RelayoutFrame(win, false, -1, aiDx);
+}
+
 void SetSidebarVisibility(MainWindow* win, bool tocVisible, bool showFavorites) {
     if (gPluginMode || !CanAccessDisk()) {
         showFavorites = false;
@@ -5673,6 +5738,10 @@ static LRESULT FrameOnCommand(MainWindow* win, HWND hwnd, UINT msg, WPARAM wp, L
             ToggleTocBox(win);
             break;
 
+        case CmdToggleAiSidebar:
+            ToggleAiSidebar(win);
+            break;
+
         case CmdScrollUpHalfPage: {
             if (!win->IsDocLoaded()) {
                 return 0;
@@ -5949,98 +6018,18 @@ static LRESULT FrameOnCommand(MainWindow* win, HWND hwnd, UINT msg, WPARAM wp, L
             CopySelectionInTabToClipboard(tab);
             break;
 
-        // AI-HOOK: Phase 1 LLM command handlers
+        // AI-HOOK: route to the AI chat sidebar (see AiSidebarWnd.cpp).
+        // AskSelection just focuses the input for a freeform question;
+        // Define/Explain auto-submit a canned instruction.
+        case CmdAiAskSelection:
+            AiQuickAction(win, AiRequestType::Chat);
+            break;
         case CmdAiDefine:
+            AiQuickAction(win, AiRequestType::Define);
+            break;
         case CmdAiExplain:
-        case CmdAiAskSelection: {
-            // --- Step 1: confirm dispatch reached ---
-            logf("AI cmd: dispatched cmdId=%d (AiAsk=%d AiDefine=%d AiExplain=%d)\n",
-                 cmdId, CmdAiAskSelection, CmdAiDefine, CmdAiExplain);
-            logf("AI cmd: gAiBridge=%p  ready=%d  showSelection=%d  selectionOnPage=%p\n",
-                 (void*)gAiBridge,
-                 gAiBridge ? (int)gAiBridge->IsReady() : -1,
-                 (int)(win->showSelection ? 1 : 0),
-                 (void*)tab->selectionOnPage);
-
-            // --- Step 6: bypass path for Ask AI ---
-            // Creates a popup with static text, completely bypassing the bridge.
-            // Purpose: confirms that click → command dispatch → popup creation
-            // works end-to-end independent of bridge/sidecar state.
-            // Remove this block once popup appears and bridge is confirmed live.
-            if (cmdId == CmdAiAskSelection) {
-                logf("AI cmd: entering bypass path (static popup test)\n");
-                // Visible confirmation that FrameOnCommand was reached.
-                // Remove once popup is confirmed working.
-                MessageBoxW(hwnd, L"AI command reached FrameOnCommand", L"AI DEBUG", MB_OK | MB_ICONINFORMATION);
-                RECT testRect{};
-                GetClientRect(win->hwndCanvas, &testRect);
-                MapWindowPoints(win->hwndCanvas, HWND_DESKTOP,
-                                (POINT*)&testRect, 2);
-                // Center the test popup on the canvas
-                LONG cx = testRect.left + (testRect.right  - testRect.left) / 2;
-                LONG cy = testRect.top  + (testRect.bottom - testRect.top)  / 2;
-                RECT anchor{ cx - 100, cy - 10, cx + 100, cy + 10 };
-                LlmResponseWnd* testPopup =
-                    LlmResponseWnd::Create(win->hwndCanvas, anchor, /*requestId=*/0xFFFF);
-                if (testPopup) {
-                    testPopup->SetResponseText("AI click path works");
-                    logf("AI cmd: bypass popup created OK hwnd=%p\n",
-                         (void*)testPopup->GetHwnd());
-                } else {
-                    logf("AI cmd: bypass popup FAILED GetLastError=%d\n",
-                         (int)GetLastError());
-                }
-                break;
-            }
-
-            // --- Normal path (bridge-gated) ---
-            if (!gAiBridge || !gAiBridge->IsReady()) {
-                logf("AI cmd: EARLY EXIT — gAiBridge=%p ready=%d\n",
-                     (void*)gAiBridge,
-                     gAiBridge ? (int)gAiBridge->IsReady() : -1);
-                break;
-            }
-            if (!win->showSelection || !tab->selectionOnPage) {
-                logf("AI cmd: EARLY EXIT — no active selection\n");
-                break;
-            }
-
-            // --- Step 2: confirm selected text ---
-            bool isTextOnly;
-            TempStr selText = GetSelectedTextTemp(tab, "\n", isTextOnly);
-            logf("AI cmd: selText=%s (len=%d)\n",
-                 selText ? selText : "(null)",
-                 selText ? (int)str::Len(selText) : -1);
-            if (!selText || str::Len(selText) == 0) break;
-
-            const char* pageCtx = "";
-
-            // --- Step 3: anchor rect ---
-            RECT anchorRect = ToRECT(win->selectionRect);
-            MapWindowPoints(win->hwndCanvas, HWND_DESKTOP,
-                            (POINT*)&anchorRect, 2);
-            logf("AI cmd: anchorRect={%d,%d,%d,%d}\n",
-                 anchorRect.left, anchorRect.top,
-                 anchorRect.right, anchorRect.bottom);
-
-            AiRequestType reqType = AiRequestType::Ask;
-            if (cmdId == CmdAiDefine)   reqType = AiRequestType::Define;
-            if (cmdId == CmdAiExplain)  reqType = AiRequestType::Explain;
-
-            // --- Step 4: enqueue ---
-            logf("AI cmd: calling EnqueueRequest reqType=%d\n", (int)reqType);
-            uint32_t assignedId = gAiBridge->EnqueueRequest(
-                reqType, selText, pageCtx, win->hwndCanvas, anchorRect);
-            logf("AI cmd: EnqueueRequest returned id=%u\n", assignedId);
-
-            // --- Step 4: popup creation ---
-            if (assignedId != 0) {
-                LlmResponseWnd* popup =
-                    LlmResponseWnd::Create(win->hwndCanvas, anchorRect, assignedId);
-                logf("AI cmd: popup=%p for reqId=%u\n",
-                     (void*)popup, assignedId);
-            }
-        } break;
+            AiQuickAction(win, AiRequestType::Explain);
+            break;
 
         case CmdSelectAll:
             OnSelectAll(win);

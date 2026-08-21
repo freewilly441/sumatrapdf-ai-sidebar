@@ -5,6 +5,7 @@ struct SelectionOnPage;
 struct WatchedFile;
 struct EditAnnotationsWindow;
 struct MainWindow;
+struct AiChatTurn;
 
 /* Data related to a single document loaded into a tab/window */
 /* (none of these depend on MainWindow, so that a WindowTab could
@@ -54,6 +55,15 @@ struct WindowTab {
 
     // TODO: arguably a hack
     bool ignoreNextAutoReload = false;
+
+    // AI chat sidebar conversation for this document (kept per-tab so
+    // switching tabs shows each document's own conversation; owned here,
+    // displayed by MainWindow::aiSidebarWnd).
+    // Vec<T> in this codebase doesn't run destructors for non-POD T, so
+    // (like AiBridge's request queue) this stores owned pointers, not values.
+    Vec<AiChatTurn*> aiConversation;
+    // request id of an AI turn currently in flight for this tab, or 0
+    uint32_t aiPendingRequestId = 0;
 
     WindowTab(MainWindow* win);
     ~WindowTab();
