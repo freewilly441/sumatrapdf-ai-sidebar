@@ -18,8 +18,11 @@ import { join, extname, dirname, basename } from "node:path";
 import { cpus } from "node:os";
 
 // ── Tool paths ──────────────────────────────────────────────────────────────
-const CC = "x86_64-w64-mingw32-gcc";
-const CXX = "x86_64-w64-mingw32-g++";
+// -posix variant: the -win32 alternative's libstdc++ lacks working
+// std::mutex/condition_variable (missing __gthread_cond_t), which breaks
+// anything pulling in <memory>/<mutex> transitively (e.g. FrameRateWnd.cpp).
+const CC = "x86_64-w64-mingw32-gcc-posix";
+const CXX = "x86_64-w64-mingw32-g++-posix";
 const AR = "x86_64-w64-mingw32-ar";
 const WINDRES = "x86_64-w64-mingw32-windres";
 const OBJCOPY = "x86_64-w64-mingw32-objcopy";
@@ -1312,7 +1315,20 @@ const sumatraFiles: FileGroup[] = [
   // mui
   { dir: "src/mui", patterns: ["Mui.cpp", "TextRender.cpp"] },
   // wingui
-  { dir: "src/wingui", patterns: ["*.cpp"] },
+  {
+    dir: "src/wingui",
+    // WebView.cpp excluded: needs the WebView2 COM headers
+    // (packages/Microsoft.Web.WebView2.../include/WebView2.h), which are
+    // MSVC-generated and not mingw-friendly; matches this script's own
+    // original note that WebView2 may not be available under mingw.
+    patterns: [
+      "Button.cpp", "Checkbox.cpp", "DialogSizer.cpp", "DropDown.cpp", "Edit.cpp",
+      "FrameRateWnd.cpp", "HtmlWindow.cpp", "LabelWithCloseWnd.cpp", "Layout.cpp",
+      "ListBox.cpp", "Progress.cpp", "Splitter.cpp", "Static.cpp", "TabsCtrl.cpp",
+      "Tooltip.cpp", "Trackbar.cpp", "TreeView.cpp", "UIModels.cpp", "VirtWnd.cpp",
+      "Wnd.cpp",
+    ],
+  },
   // uia
   {
     dir: "src/uia",
@@ -1353,6 +1369,9 @@ const sumatraFiles: FileGroup[] = [
     patterns: [
       "Accelerators.*",
       "Actions.*",
+      "AiBridge.*",
+      "AiRequest.h",
+      "AiSidebarWnd.*",
       "AppColors.*",
       "AppSettings.*",
       "AppTools.*",
@@ -1643,34 +1662,55 @@ async function buildSumatraExe(
   await compileAll(units, JOBS);
   const exeObjs = units.map((u) => u.obj);
 
-  // ── Compile _com_util stub (mingw doesn't ship comsuppw.lib) ─────────
-  const comUtilSrc = join(outDir, "obj", "_com_util_stub.cpp");
-  const comUtilObj = join(outDir, "obj", "_com_util_stub.o");
-  await writeFile(comUtilSrc, `
-#include <windows.h>
-#include <oleauto.h>
-namespace _com_util {
-  BSTR WINAPI ConvertStringToBSTR(const char *pSrc) {
-    if (!pSrc) return nullptr;
-    int len = MultiByteToWideChar(CP_ACP, 0, pSrc, -1, nullptr, 0);
-    BSTR bstr = SysAllocStringLen(nullptr, len - 1);
-    if (bstr) MultiByteToWideChar(CP_ACP, 0, pSrc, -1, bstr, len);
-    return bstr;
-  }
-  char *WINAPI ConvertBSTRToString(BSTR pSrc) {
-    if (!pSrc) return nullptr;
-    int len = WideCharToMultiByte(CP_ACP, 0, pSrc, -1, nullptr, 0, nullptr, nullptr);
-    char *str = new char[len];
-    WideCharToMultiByte(CP_ACP, 0, pSrc, -1, str, len, nullptr, nullptr);
-    return str;
-  }
-}
+  // NOTE: mingw doesn't ship comsuppw.lib, so _com_util::ConvertStringToBSTR /
+  // ConvertBSTRToString (used transitively via _bstr_t from <comdef.h>) have
+  // no definition from the toolchain itself. We used to compile a small stub
+  // providing them, but ext/unrar/isnt.cpp already pulls in mingw's comdef.h
+  // in a way that emits real (non-inline) definitions into libunrar.a, and
+  // linking our own stub alongside that caused a multiple-definition error.
+  // Since nothing in src/ calls _com_util:: directly (only indirectly via
+  // _bstr_t), we rely on unrar's copy instead of compiling our own.
+
+  // ── WebView2 stub (mingw build only) ───────────────────────────────────
+  // src/wingui/WebView.cpp needs the real WebView2 SDK header
+  // (packages/Microsoft.Web.WebView2.../include/WebView2.h), which is
+  // MSVC/MIDL-generated COM glue that isn't mingw-friendly, so that file is
+  // excluded from sumatraFiles above. But CrashHandler.cpp, UpdateCheck.cpp
+  // and SimpleBrowserWindow.cpp call into it unconditionally (no #ifdef), so
+  // we still need *some* definition to satisfy the linker. This stub reports
+  // "no WebView2 available", which is honest: under this mingw build the
+  // embedded-browser feature (manual/help viewer) is simply not present.
+  // Real WebView2 support is unaffected — WebView.cpp still builds normally
+  // under MSVC.
+  const webviewStubSrc = join(outDir, "obj", "_webview2_stub.cpp");
+  const webviewStubObj = join(outDir, "obj", "_webview2_stub.o");
+  await writeFile(webviewStubSrc, `
+#include "utils/BaseUtil.h"
+#include "wingui/UIModels.h"
+#include "wingui/Layout.h"
+#include "wingui/WinGui.h"
+#include "wingui/WebView.h"
+
+TempStr GetWebView2VersionTemp() { return nullptr; }
+bool HasWebView() { return false; }
+
+WebviewWnd::WebviewWnd() {}
+WebviewWnd::~WebviewWnd() {}
+HWND WebviewWnd::Create(const CreateWebViewArgs&) { return nullptr; }
+void WebviewWnd::Eval(const char*) {}
+void WebviewWnd::SetHtml(const char*) {}
+void WebviewWnd::Init(const char*) {}
+void WebviewWnd::Navigate(const char*) {}
+bool WebviewWnd::Embed(WebViewMsgCb&) { return false; }
+void WebviewWnd::OnBrowserMessage(const char*) {}
+LRESULT WebviewWnd::WndProc(HWND, UINT, WPARAM, LPARAM) { return 0; }
+void WebviewWnd::UpdateWebviewSize() {}
 `);
-  const comRes = await spawnCmd([CXX, "-Os", "-c", comUtilSrc, "-o", comUtilObj]);
-  if (!comRes.ok) {
-    console.error(`Failed to compile _com_util stub: ${comRes.stderr}`);
+  const webviewRes = await spawnCmd([CXX, "-std=c++23", "-fno-rtti", "-fno-exceptions", "-Isrc", "-c", webviewStubSrc, "-o", webviewStubObj]);
+  if (!webviewRes.ok) {
+    console.error(`Failed to compile WebView2 stub: ${webviewRes.stderr}`);
   }
-  exeObjs.push(comUtilObj);
+  exeObjs.push(webviewStubObj);
 
   // ── Embed font files ──────────────────────────────────────────────────
   console.log("Embedding font files...");
@@ -1732,8 +1772,8 @@ namespace _com_util {
     ...fontObjs,
     // archives: order matters (dependents first)
     ...archives,
-    // WebView2 import library (MSVC import lib, mingw can usually consume these)
-    "packages/Microsoft.Web.WebView2.1.0.992.28/build/native/x64/WebView2Loader.dll.lib",
+    // no WebView2Loader.dll.lib here: WebView.cpp is excluded from this
+    // build (see the WebView2 stub note above), so nothing references it.
     // system libraries
     ...SYSTEM_LIBS.map((l) => `-l${l}`),
   ];

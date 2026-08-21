@@ -11,7 +11,7 @@
 
 #include <wintrust.h>
 #include <softpub.h>
-#include <WinCrypt.h>
+#include <wincrypt.h>
 #include <bitset>
 #include <intrin.h>
 #include <mlang.h>

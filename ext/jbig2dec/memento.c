@@ -692,7 +692,7 @@ static void Memento_showStacktrace(void **stack, int numberOfFrames)
     }
 }
 #elif defined(MEMENTO_STACKTRACE_METHOD) && MEMENTO_STACKTRACE_METHOD == 2
-#include <Windows.h>
+#include <windows.h>
 
 /* We use DbgHelp.dll rather than DbgHelp.lib. This avoids us needing
  * extra link time complications, and enables us to fall back gracefully
