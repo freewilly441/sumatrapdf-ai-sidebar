@@ -1366,7 +1366,11 @@ HMENU BuildMenuFromDef(MenuDef* menuDef, HMENU menu, BuildMenuCtx* ctx) {
     }
 
     // AI-HOOK: Phase 1 - append AI commands to selection context menu
-    if (menuDef == menuDefSelection && ctx && ctx->hasSelection && gAiBridge && gAiBridge->IsReady()) {
+    // DIAGNOSTIC: unconditional insertion — confirms this code path is live.
+    // gAiBridge gating and hasSelection gating are removed for testing.
+    // Restore gating once items are confirmed visible.
+    if (menuDef == menuDefSelection) {
+        logf("AI menu: BuildMenuFromDef reached menuDefSelection — inserting items unconditionally\n");
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(menu, MF_STRING | MF_ENABLED, CmdAiDefine,       L"Define");
         AppendMenuW(menu, MF_STRING | MF_ENABLED, CmdAiExplain,      L"Explain Selection");
@@ -1861,6 +1865,9 @@ void OnWindowContextMenu(MainWindow* win, int x, int y) {
     int cmdId = TrackPopupMenu(popup, flags, pt.x, pt.y, 0, win->hwndFrame, nullptr);
     FreeMenuOwnerDrawInfoData(popup);
     DestroyMenu(popup);
+    // AI-HOOK diagnostic: log every cmdId returned from TrackPopupMenu so we can
+    // confirm what ID the Selection submenu items actually deliver.
+    logf("OnWindowContextMenu: TrackPopupMenu returned cmdId=%d (0x%X)\n", cmdId, (unsigned)cmdId);
 
     auto cmd = FindCustomCommand(cmdId);
     if (cmd && cmd->origId == CmdSelectionHandler) {
@@ -1903,8 +1910,17 @@ void OnWindowContextMenu(MainWindow* win, int x, int y) {
         case CmdSaveAnnotations:
         case CmdSaveAnnotationsNewFile:
         case CmdFavoriteAdd:
-        case CmdToggleFullscreen: {
+        case CmdToggleFullscreen:
+        // AI-HOOK: Phase 1 — route AI commands to FrameOnCommand.
+        // TrackPopupMenu uses TPM_RETURNCMD so no WM_COMMAND is auto-posted;
+        // we must explicitly forward via HwndSendCommand for any command that
+        // is handled in FrameOnCommand rather than handled locally here.
+        case CmdAiAskSelection:
+        case CmdAiDefine:
+        case CmdAiExplain: {
             // handle in FrameOnCommand() in SumatraPDF.cpp
+            logf("OnWindowContextMenu: forwarding cmdId=%d to hwndFrame=%p\n",
+                 cmdId, (void*)win->hwndFrame);
             HwndSendCommand(win->hwndFrame, cmdId);
         } break;
 

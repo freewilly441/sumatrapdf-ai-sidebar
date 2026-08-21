@@ -5334,6 +5334,12 @@ static LRESULT FrameOnCommand(MainWindow* win, HWND hwnd, UINT msg, WPARAM wp, L
     int cmdId = LOWORD(wp);
     bool openAnnotationEdit = false;
 
+    // AI-HOOK diagnostic: log every AI-range command arriving at FrameOnCommand
+    if (cmdId == CmdAiAskSelection || cmdId == CmdAiDefine || cmdId == CmdAiExplain) {
+        logf("FrameOnCommand: AI cmdId=%d (0x%X) arrived  win=%p hwnd=%p\n",
+             cmdId, (unsigned)cmdId, (void*)win, (void*)hwnd);
+    }
+
     if (cmdId >= 0xF000) {
         // handle system menu messages for the Window menu (needed for Tabs in Titlebar)
         return SendMessageW(hwnd, WM_SYSCOMMAND, wp, lp);
@@ -5947,36 +5953,92 @@ static LRESULT FrameOnCommand(MainWindow* win, HWND hwnd, UINT msg, WPARAM wp, L
         case CmdAiDefine:
         case CmdAiExplain:
         case CmdAiAskSelection: {
-            if (!gAiBridge || !gAiBridge->IsReady()) break;
-            if (!win->showSelection || !tab->selectionOnPage) break;
+            // --- Step 1: confirm dispatch reached ---
+            logf("AI cmd: dispatched cmdId=%d (AiAsk=%d AiDefine=%d AiExplain=%d)\n",
+                 cmdId, CmdAiAskSelection, CmdAiDefine, CmdAiExplain);
+            logf("AI cmd: gAiBridge=%p  ready=%d  showSelection=%d  selectionOnPage=%p\n",
+                 (void*)gAiBridge,
+                 gAiBridge ? (int)gAiBridge->IsReady() : -1,
+                 (int)(win->showSelection ? 1 : 0),
+                 (void*)tab->selectionOnPage);
 
+            // --- Step 6: bypass path for Ask AI ---
+            // Creates a popup with static text, completely bypassing the bridge.
+            // Purpose: confirms that click → command dispatch → popup creation
+            // works end-to-end independent of bridge/sidecar state.
+            // Remove this block once popup appears and bridge is confirmed live.
+            if (cmdId == CmdAiAskSelection) {
+                logf("AI cmd: entering bypass path (static popup test)\n");
+                // Visible confirmation that FrameOnCommand was reached.
+                // Remove once popup is confirmed working.
+                MessageBoxW(hwnd, L"AI command reached FrameOnCommand", L"AI DEBUG", MB_OK | MB_ICONINFORMATION);
+                RECT testRect{};
+                GetClientRect(win->hwndCanvas, &testRect);
+                MapWindowPoints(win->hwndCanvas, HWND_DESKTOP,
+                                (POINT*)&testRect, 2);
+                // Center the test popup on the canvas
+                LONG cx = testRect.left + (testRect.right  - testRect.left) / 2;
+                LONG cy = testRect.top  + (testRect.bottom - testRect.top)  / 2;
+                RECT anchor{ cx - 100, cy - 10, cx + 100, cy + 10 };
+                LlmResponseWnd* testPopup =
+                    LlmResponseWnd::Create(win->hwndCanvas, anchor, /*requestId=*/0xFFFF);
+                if (testPopup) {
+                    testPopup->SetResponseText("AI click path works");
+                    logf("AI cmd: bypass popup created OK hwnd=%p\n",
+                         (void*)testPopup->GetHwnd());
+                } else {
+                    logf("AI cmd: bypass popup FAILED GetLastError=%d\n",
+                         (int)GetLastError());
+                }
+                break;
+            }
+
+            // --- Normal path (bridge-gated) ---
+            if (!gAiBridge || !gAiBridge->IsReady()) {
+                logf("AI cmd: EARLY EXIT — gAiBridge=%p ready=%d\n",
+                     (void*)gAiBridge,
+                     gAiBridge ? (int)gAiBridge->IsReady() : -1);
+                break;
+            }
+            if (!win->showSelection || !tab->selectionOnPage) {
+                logf("AI cmd: EARLY EXIT — no active selection\n");
+                break;
+            }
+
+            // --- Step 2: confirm selected text ---
             bool isTextOnly;
             TempStr selText = GetSelectedTextTemp(tab, "\n", isTextOnly);
+            logf("AI cmd: selText=%s (len=%d)\n",
+                 selText ? selText : "(null)",
+                 selText ? (int)str::Len(selText) : -1);
             if (!selText || str::Len(selText) == 0) break;
 
-            // Get current page text for context injection (may be empty)
-            // AI-HOOK: GetCurrentPageTextTemp declared in Selection.h (to be added)
-            // For Phase 1 scaffold, we pass empty context; wire up in Phase 1.1
             const char* pageCtx = "";
 
-            // Get anchor rect in screen coordinates for popup placement
-            // win->selectionRect is Rect (internal type); ToRECT converts to RECT
+            // --- Step 3: anchor rect ---
             RECT anchorRect = ToRECT(win->selectionRect);
             MapWindowPoints(win->hwndCanvas, HWND_DESKTOP,
                             (POINT*)&anchorRect, 2);
+            logf("AI cmd: anchorRect={%d,%d,%d,%d}\n",
+                 anchorRect.left, anchorRect.top,
+                 anchorRect.right, anchorRect.bottom);
 
             AiRequestType reqType = AiRequestType::Ask;
             if (cmdId == CmdAiDefine)   reqType = AiRequestType::Define;
             if (cmdId == CmdAiExplain)  reqType = AiRequestType::Explain;
 
-            // EnqueueRequest returns the assigned id atomically.
-            // Create popup after enqueue — shows "Asking AI..." immediately.
+            // --- Step 4: enqueue ---
+            logf("AI cmd: calling EnqueueRequest reqType=%d\n", (int)reqType);
             uint32_t assignedId = gAiBridge->EnqueueRequest(
                 reqType, selText, pageCtx, win->hwndCanvas, anchorRect);
+            logf("AI cmd: EnqueueRequest returned id=%u\n", assignedId);
 
+            // --- Step 4: popup creation ---
             if (assignedId != 0) {
-                LlmResponseWnd::Create(win->hwndCanvas, anchorRect, assignedId);
-                // Popup shows "Asking AI..." until WM_AI_RESPONSE_DONE arrives
+                LlmResponseWnd* popup =
+                    LlmResponseWnd::Create(win->hwndCanvas, anchorRect, assignedId);
+                logf("AI cmd: popup=%p for reqId=%u\n",
+                     (void*)popup, assignedId);
             }
         } break;
 

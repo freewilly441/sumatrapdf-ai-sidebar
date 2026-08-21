@@ -261,11 +261,10 @@ bool AiBridge::SpawnSidecar(const char* exePath, const char* modelPath, int port
     TempWStr cmdLineW = ToWStrTemp(cmdLine.Get());
 
     STARTUPINFOW si{};
-    si.cb          = sizeof(si);
-    si.dwFlags     = STARTF_USESTDHANDLES;
-    si.hStdInput   = INVALID_HANDLE_VALUE;
-    si.hStdOutput  = INVALID_HANDLE_VALUE;
-    si.hStdError   = INVALID_HANDLE_VALUE;
+    si.cb = sizeof(si);
+    // Do NOT set STARTF_USESTDHANDLES — passing INVALID_HANDLE_VALUE as stdio
+    // handles causes CreateProcessW to fail with ERROR_INVALID_HANDLE.
+    // CREATE_NO_WINDOW already suppresses any console window.
 
     PROCESS_INFORMATION pi{};
     BOOL created = CreateProcessW(

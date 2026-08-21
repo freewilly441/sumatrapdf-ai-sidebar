@@ -2605,18 +2605,25 @@ ContinueOpenWindow:
     {
         const char* llamaExe   = "C:\\llama\\llama-server.exe";
         const char* modelFile  = "C:\\llama\\models\\phi-3-mini.gguf";
+        logf("AiBridge startup: checking paths\n");
+        logf("  llamaExe  = '%s' exists=%d\n", llamaExe,  (int)file::Exists(llamaExe));
+        logf("  modelFile = '%s' exists=%d\n", modelFile, (int)file::Exists(modelFile));
         if (file::Exists(llamaExe) && file::Exists(modelFile)) {
             gAiBridge = new AiBridge();
-            if (!gAiBridge->Init(llamaExe, modelFile, 8080)) {
+            logf("AiBridge: allocated gAiBridge=%p\n", (void*)gAiBridge);
+            bool initOk = gAiBridge->Init(llamaExe, modelFile, 8080);
+            logf("AiBridge: Init() returned %d\n", (int)initOk);
+            if (!initOk) {
                 logf("AiBridge: Init failed — AI features disabled\n");
                 delete gAiBridge;
                 gAiBridge = nullptr;
             } else {
-                logf("AiBridge: initialized, sidecar starting\n");
+                logf("AiBridge: initialized, bridge thread started, sidecar launching\n");
             }
         } else {
-            logf("AiBridge: llama-server or model not found — AI features disabled\n");
+            logf("AiBridge: path check failed — AI features disabled\n");
         }
+        logf("AiBridge startup done: gAiBridge=%p\n", (void*)gAiBridge);
     }
 
     StartDeleteStaleFiles();
