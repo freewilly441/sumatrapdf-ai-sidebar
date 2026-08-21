@@ -41,7 +41,7 @@ extern "C" {
 
 #include "utils/Log.h"
 
-#include "theme.h"
+#include "Theme.h"
 
 constexpr int borderWidthMin = 0;
 constexpr int borderWidthMax = 12;

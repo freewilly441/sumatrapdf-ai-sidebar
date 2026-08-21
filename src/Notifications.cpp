@@ -14,7 +14,7 @@
 #include "Settings.h"
 #include "AppSettings.h"
 #include "Annotation.h"
-#include "SumatraPdf.h"
+#include "SumatraPDF.h"
 #include "AppTools.h"
 
 #include "ProgressUpdateUI.h"
