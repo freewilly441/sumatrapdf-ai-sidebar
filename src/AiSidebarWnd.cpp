@@ -6,11 +6,10 @@
 // (win->hwndAiBox) subclassed for WM_SIZE, holding a LabelWithCloseWnd header
 // plus this panel's own controls (mode dropdown, history view, input, send).
 
-#include "utils/BaseUtil.h"
+#include "utils/BaseUtil.h" // already pulls in utils/StrconvUtil.h (ToUtf8); don't include it again, it has no include guard
 #include "utils/ThreadUtil.h" // Mutex/AtomicInt, required before AiBridge.h
 #include "utils/ScopedWin.h"
 #include "utils/WinUtil.h"
-#include "utils/StrconvUtil.h"
 
 #include "wingui/UIModels.h"
 #include "wingui/Layout.h"
