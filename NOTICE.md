@@ -20,8 +20,9 @@ weakens, or adds conflicting terms to any part of the original work.
 The AI chat sidebar feature in this fork — a dockable panel that lets a
 reader ask questions about a PDF's current selection, page, or full document
 via a local [Ollama](https://ollama.com) instance — was developed by
-**Aethermark Systems LLC**, as a modification to SumatraPDF distributed under
-the same GPLv3 terms as the original.
+**[Aethermark Systems LLC](https://aethermarksystems.com)**, as a
+modification to SumatraPDF distributed under the same GPLv3 terms as the
+original.
 
 High-level summary of what changed for this feature:
 

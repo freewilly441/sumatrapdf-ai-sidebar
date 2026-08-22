@@ -1,3 +1,5 @@
+> AI chat sidebar fork by [Aethermark Systems LLC](https://aethermarksystems.com)
+
 [![Build](https://github.com/sumatrapdfreader/sumatrapdf/actions/workflows/build.yml/badge.svg?branch=master)](https://github.com/sumatrapdfreader/sumatrapdf/actions/workflows/build.yml)
 ## SumatraPDF Reader
 
@@ -14,12 +16,14 @@ More Information:
 
 ## AI Chat Sidebar (this fork)
 
-This fork of SumatraPDF adds a persistent, dockable **AI chat sidebar** —
-developed by **Aethermark Systems LLC** — that lets you ask questions about
-the document you're reading. It's backed entirely by a local
-[Ollama](https://ollama.com) instance: no document content, selections, or
-questions are sent anywhere else. See [NOTICE.md](NOTICE.md) for what
-specifically changed relative to upstream SumatraPDF.
+**Developed by [Aethermark Systems LLC](https://aethermarksystems.com)**
+
+This fork of SumatraPDF adds a persistent, dockable **AI chat sidebar** that
+lets you ask questions about the document you're reading. It's backed
+entirely by a local [Ollama](https://ollama.com) instance: no document
+content, selections, or questions are sent anywhere else. See
+[NOTICE.md](NOTICE.md) for what specifically changed relative to upstream
+SumatraPDF.
 
 ### What it does
 
@@ -98,3 +102,8 @@ A MinGW-w64 cross-compilation path also exists
 machines, with some known divergences from the MSVC build (see commit
 history for details) — use the MSVC build above for anything you intend to
 actually run day to day.
+
+---
+
+Built by [Aethermark Systems LLC](https://aethermarksystems.com) — check out
+our other projects at [aethermarksystems.com](https://aethermarksystems.com).
