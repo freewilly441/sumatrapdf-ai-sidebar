@@ -31,6 +31,37 @@ function findLlvmPdbUtil(): string | undefined {
   return;
 }
 
+// vswhere.exe lives at a fixed location that's been stable since VS2017,
+// unlike the actual install directory which moves with each VS version.
+const vswherePath = String.raw`C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe`;
+
+const vsYears = ["2026", "2022"];
+
+function findVsRootViaVswhere(): string | undefined {
+  try {
+    if (!existsSync(vswherePath)) {
+      return;
+    }
+    const result = Bun.spawnSync(
+      [vswherePath, "-latest", "-products", "*", "-property", "installationPath"],
+      { stdout: "pipe", stderr: "pipe" },
+    );
+    if (result.exitCode !== 0) {
+      return;
+    }
+    const installationPath = new TextDecoder().decode(result.stdout).trim();
+    if (!installationPath) {
+      return;
+    }
+    if (!existsSync(join(installationPath, msBuildRelPath))) {
+      return;
+    }
+    return installationPath;
+  } catch {
+    return;
+  }
+}
+
 function findVsRoot(): string {
   // try PATH first
   try {
@@ -61,13 +92,22 @@ function findVsRoot(): string {
     // msbuild not in PATH
   }
 
-  // try known Program Files locations
+  // try vswhere.exe, which tracks the installed VS version without needing
+  // a hardcoded year
+  const viaVswhere = findVsRootViaVswhere();
+  if (viaVswhere) {
+    return viaVswhere;
+  }
+
+  // last-resort fallback: known Program Files locations for known VS years
   const programFiles = process.env["ProgramFiles"] ?? String.raw`C:\Program Files`;
-  const vsBase = join(programFiles, "Microsoft Visual Studio", "2022");
-  for (const edition of vsEditions) {
-    const vsRoot = join(vsBase, edition);
-    if (existsSync(join(vsRoot, msBuildRelPath))) {
-      return vsRoot;
+  for (const year of vsYears) {
+    const vsBase = join(programFiles, "Microsoft Visual Studio", year);
+    for (const edition of vsEditions) {
+      const vsRoot = join(vsBase, edition);
+      if (existsSync(join(vsRoot, msBuildRelPath))) {
+        return vsRoot;
+      }
     }
   }
 
