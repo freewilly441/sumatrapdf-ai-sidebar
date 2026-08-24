@@ -713,6 +713,7 @@ function sumatrapdf_files()
     "Accelerators.*",
     "Actions.*",
     "AiBridge.*",
+    "AiExport.*",
     "AiRequest.h",
     "AiSidebarWnd.*",
     "AppColors.*",
