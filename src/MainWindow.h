@@ -139,6 +139,11 @@ struct MainWindow {
     Edit* aiHistoryEdit = nullptr; // read-only, shows the conversation so far
     Edit* aiInputEdit = nullptr;   // where the user types their message
     Button* aiSendButton = nullptr;
+    // export buttons (AI-HOOK: export system, see AiExport.h): enabled once
+    // the current tab's conversation has at least one AI response.
+    Button* aiExportNoteButton = nullptr;
+    Button* aiExportStudySheetButton = nullptr;
+    Button* aiExportQuizButton = nullptr;
     // whether the AI chat sidebar is currently visible
     bool aiVisible = false;
     // vertical splitter for resizing the AI sidebar

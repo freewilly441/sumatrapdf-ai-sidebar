@@ -29,10 +29,22 @@ enum class AiRequestState {
 };
 
 // Drives instruction-prefix selection in AiBridge::BuildMessages().
+//
+// Note/StudySheet/Quiz are export requests (AI-HOOK: export system): a
+// *second* LLM call, triggered from the sidebar's export buttons, that asks
+// the model to reformat the conversation so far into a structured JSON
+// payload instead of a chat reply. They share AiBridge's queue/HTTP
+// transport and this enum (for prompt selection), but are dispatched to a
+// separate response handler in AiSidebarWnd.cpp — see
+// WindowTab::aiPendingExportRequestId — never appended to aiConversation as
+// a chat turn. See AiExport.h for the resulting on-disk schema.
 enum class AiRequestType {
-    Chat,    // freeform message typed in the sidebar (any context mode)
-    Define,  // quick action: single-word inline definition of the selection
-    Explain, // quick action: explain the current selection
+    Chat,       // freeform message typed in the sidebar (any context mode)
+    Define,     // quick action: single-word inline definition of the selection
+    Explain,    // quick action: explain the current selection
+    Note,       // export: reformat conversation into a note (title/body/tags)
+    StudySheet, // export: reformat conversation into a study sheet (same shape as Note)
+    Quiz,       // export: generate quiz questions from the conversation
 };
 
 // Which part of the document a chat turn's context comes from.

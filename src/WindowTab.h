@@ -65,6 +65,21 @@ struct WindowTab {
     // request id of an AI turn currently in flight for this tab, or 0
     uint32_t aiPendingRequestId = 0;
 
+    // AI-HOOK: export system (see AiExport.h). Bookkeeping for an in-flight
+    // "reformat conversation into a note/study sheet/quiz" request, kept
+    // separate from aiPendingRequestId so export responses are routed to
+    // OnAiExportResponseDone() instead of being appended as a chat turn
+    // (see AiSidebarWnd.cpp). Source fields are snapshotted at request time
+    // since the current page/selection may change before the response
+    // arrives.
+    uint32_t aiPendingExportRequestId = 0;
+    // AiRequestType (Note/StudySheet/Quiz), stored as int so this header
+    // doesn't need to pull in AiRequest.h just for the enum type; cast at
+    // the two use sites in AiSidebarWnd.cpp.
+    int aiPendingExportKind = 0;
+    int aiPendingExportPage = 0;
+    str::Str aiPendingExportSelectionText;
+
     WindowTab(MainWindow* win);
     ~WindowTab();
 

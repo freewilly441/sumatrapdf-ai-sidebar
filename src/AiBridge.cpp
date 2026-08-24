@@ -463,12 +463,47 @@ bool AiBridge::SendChatRequest(const AiRequest& req, str::Str& responseOut) {
 // preceding user/assistant-tagged block since we don't keep a structured
 // multi-message history across requests yet — cheap and good enough for now,
 // revisit if it costs too many tokens on long conversations.
+//
+// AI-HOOK: Note/StudySheet/Quiz are export requests (see AiRequest.h). Their
+// system prompts ask the model to answer with a single raw JSON object
+// matching the shape AiSidebarWnd.cpp's response parser expects — that
+// parser is intentionally permissive (falls back to a plain note/empty quiz
+// on malformed JSON) since small local models don't always follow the
+// instruction exactly. The JSON shape here is a prompting convention only;
+// it is not the same as the on-disk export schema in docs/export-schema.md
+// (AiExport.cpp builds that from the parsed fields, so the final file is
+// always well-formed even if the model's JSON isn't).
 void AiBridge::BuildMessagesJson(const AiRequest& req, str::Str& jsonOut) const {
     const char* systemPrompt = "You are a helpful reading assistant embedded in a PDF viewer.";
     if (req.type == AiRequestType::Define) {
         systemPrompt = "You are a dictionary. Define the given term in 1-2 sentences. Be concise.";
     } else if (req.type == AiRequestType::Explain) {
         systemPrompt = "You are a reading assistant. Explain the given passage briefly.";
+    } else if (req.type == AiRequestType::Note) {
+        systemPrompt =
+            "You are a note-taking assistant. Read the conversation below and produce a concise note "
+            "capturing the key information a reader would want to remember. "
+            "Respond with ONLY a single raw JSON object — no markdown, no code fences, no commentary — "
+            "matching exactly this shape: "
+            "{\"title\": string, \"body\": string, \"tags\": [string, ...]}. "
+            "body is plain text (use \\n for line breaks). Provide 2-5 short, lowercase tags.";
+    } else if (req.type == AiRequestType::StudySheet) {
+        systemPrompt =
+            "You are a study-guide assistant. Read the conversation below and condense it into a structured "
+            "study sheet: organize the material under clear headings with bullet points for key facts, "
+            "definitions and takeaways. "
+            "Respond with ONLY a single raw JSON object — no markdown, no code fences, no commentary — "
+            "matching exactly this shape: "
+            "{\"title\": string, \"body\": string, \"tags\": [string, ...]}. "
+            "body is plain text (use \\n for line breaks and \"- \" for bullets). Provide 2-5 short, lowercase tags.";
+    } else if (req.type == AiRequestType::Quiz) {
+        systemPrompt =
+            "You are a quiz-generation assistant. Read the conversation below and write 3-5 quiz questions "
+            "that test understanding of the material. "
+            "Respond with ONLY a single raw JSON object — no markdown, no code fences, no commentary — "
+            "matching exactly this shape: {\"questions\": [{\"question\": string, \"answer\": string, "
+            "\"type\": \"short_answer\" or \"multiple_choice\", \"choices\": [string, ...]}]}. "
+            "Only include \"choices\" (4 options) when type is \"multiple_choice\"; omit it for \"short_answer\".";
     }
 
     jsonOut.AppendFmt("{\"model\":\"");
@@ -491,6 +526,11 @@ void AiBridge::BuildMessagesJson(const AiRequest& req, str::Str& jsonOut) const 
         const char* label = "Selected text";
         if (req.contextMode == AiContextMode::Page) label = "Current page";
         if (req.contextMode == AiContextMode::Document) label = "Document";
+        bool isExport = req.type == AiRequestType::Note || req.type == AiRequestType::StudySheet ||
+                        req.type == AiRequestType::Quiz;
+        if (isExport) {
+            label = "Conversation";
+        }
         JsonEscapeAppend(label, jsonOut);
         JsonEscapeAppend(":\n", jsonOut);
         JsonEscapeAppend(req.contextText.Get(), jsonOut);
