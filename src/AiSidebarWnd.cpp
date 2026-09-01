@@ -34,7 +34,9 @@
 #include "AiRequest.h"
 #include "AiBridge.h"
 #include "AiSidebarWnd.h"
+#include "AiExport.h"
 
+#include "utils/JsonParser.h"
 #include "utils/Log.h"
 
 namespace AiSidebarWnd {
@@ -139,6 +141,268 @@ static void FormatConversationText(WindowTab* tab, str::Str& out, size_t charBud
 }
 
 // ---------------------------------------------------------------------------
+// AI-HOOK: export system.
+//
+// A second, distinct LLM call (still routed through AiBridge/gAiBridge, but
+// its own AiRequestType values and its own response handler — see
+// AiRequest.h) that reformats the conversation so far into a structured
+// artifact and writes it to disk via AiExport.h. Decoupled from the chat
+// flow: export responses never touch tab->aiConversation as a turn (except
+// for the one-line success/failure status message appended for user
+// feedback); see WindowTab::aiPendingExportRequestId.
+// ---------------------------------------------------------------------------
+
+// Returns true once the current tab has at least one AI (non-user) turn,
+// i.e. there is something to export. Drives export button enabled state.
+static bool AiTabHasResponse(WindowTab* tab) {
+    if (!tab) {
+        return false;
+    }
+    for (AiChatTurn* t : tab->aiConversation) {
+        if (!t->isUser && !t->isError) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void UpdateAiExportButtonsEnabled(MainWindow* win) {
+    if (!win->aiExportNoteButton) {
+        return;
+    }
+    WindowTab* tab = win->CurrentTab();
+    bool enabled = AiTabHasResponse(tab) && tab->aiPendingExportRequestId == 0;
+    win->aiExportNoteButton->SetIsEnabled(enabled);
+    win->aiExportStudySheetButton->SetIsEnabled(enabled);
+    win->aiExportQuizButton->SetIsEnabled(enabled);
+}
+
+// Appends a one-line status turn (export success/failure) to the
+// conversation so the user gets feedback in the same place chat errors show
+// up, without pretending it's a chat turn from the model.
+static void AppendAiExportStatusTurn(WindowTab* tab, bool isError, const char* text) {
+    auto* turn = new AiChatTurn();
+    turn->isUser = false;
+    turn->isError = isError;
+    turn->text.Set(text);
+    tab->aiConversation.Append(turn);
+}
+
+// Parses a raw LLM response into note.title/body/tags. The model is asked
+// (see AiBridge::BuildMessagesJson) to answer with only a JSON object of
+// shape {"title":string,"body":string,"tags":[string,...]}, but small local
+// models don't always comply exactly, so this is permissive: strips a
+// leading/trailing markdown code fence if present, and if title/body are
+// still empty after parsing, falls back to a generic title with the whole
+// raw response as the body rather than losing the content.
+struct NoteJsonVisitor : json::ValueVisitor {
+    AiExport::NoteData* note = nullptr;
+    bool Visit(const char* path, const char* value, json::Type) override {
+        if (str::Eq(path, "/title")) {
+            note->title.Set(value);
+        } else if (str::Eq(path, "/body")) {
+            note->body.Set(value);
+        } else if (str::StartsWith(path, "/tags[")) {
+            note->tags.Append(new str::Str(value));
+        }
+        return true;
+    }
+};
+
+// Same leniency as NoteJsonVisitor's caller, for
+// {"questions":[{"question":...,"answer":...,"type":...,"choices":[...]},...]}.
+struct QuizJsonVisitor : json::ValueVisitor {
+    AiExport::QuizData* quiz = nullptr;
+    int lastIndex = -1;
+    bool Visit(const char* path, const char* value, json::Type) override {
+        const char* p = str::Find(path, "/questions[");
+        if (!p) {
+            return true;
+        }
+        p += str::Len("/questions[");
+        int idx = atoi(p);
+        if (idx != lastIndex) {
+            quiz->items.Append(new AiExport::QuizItem());
+            lastIndex = idx;
+        }
+        AiExport::QuizItem* item = quiz->items[quiz->items.len - 1];
+        const char* fieldSep = str::Find(p, "]/");
+        if (!fieldSep) {
+            return true;
+        }
+        const char* field = fieldSep + 2;
+        if (str::StartsWith(field, "question")) {
+            item->question.Set(value);
+        } else if (str::StartsWith(field, "answer")) {
+            item->answer.Set(value);
+        } else if (str::StartsWith(field, "type")) {
+            item->type.Set(value);
+        } else if (str::StartsWith(field, "choices")) {
+            item->choices.Append(new str::Str(value));
+        }
+        return true;
+    }
+};
+
+// Strips a ```json ... ``` (or bare ``` ... ```) fence around raw if the
+// model wrapped its JSON in one despite being told not to.
+static const char* StripJsonFenceTemp(const char* raw) {
+    TempStr s = str::DupTemp(raw);
+    str::TrimWSInPlace(s, str::TrimOpt::Both);
+    if (str::StartsWith(s, "```")) {
+        const char* nl = str::FindChar(s, '\n');
+        s = nl ? str::DupTemp(nl + 1) : str::DupTemp("");
+    }
+    if (str::EndsWith(s, "```")) {
+        s[str::Len(s) - 3] = 0;
+    }
+    str::TrimWSInPlace(s, str::TrimOpt::Both);
+    return s;
+}
+
+static void ParseNoteFromLlmText(const char* rawText, AiExport::NoteData& note) {
+    const char* json = StripJsonFenceTemp(rawText);
+    NoteJsonVisitor visitor;
+    visitor.note = &note;
+    bool ok = json::Parse(json, &visitor);
+    if (!ok || note.title.size() == 0) {
+        note.title.Set("Untitled note");
+        if (note.body.size() == 0) {
+            note.body.Set(rawText);
+        }
+    }
+}
+
+static void ParseQuizFromLlmText(const char* rawText, AiExport::QuizData& quiz) {
+    const char* json = StripJsonFenceTemp(rawText);
+    QuizJsonVisitor visitor;
+    visitor.quiz = &quiz;
+    json::Parse(json, &visitor);
+    for (AiExport::QuizItem* item : quiz.items) {
+        if (item->type.size() == 0) {
+            item->type.Set("short_answer");
+        }
+    }
+}
+
+static void FillExportSource(WindowTab* tab, AiExport::Source& source) {
+    if (tab->filePath) {
+        source.filePath.Set(tab->filePath);
+    }
+    source.page = tab->aiPendingExportPage;
+    source.selectionText.Set(tab->aiPendingExportSelectionText.Get());
+}
+
+// Handles WM_AI_RESPONSE_DONE/WM_AI_ERROR when requestId matches a pending
+// export (not a chat) request. Returns false (and leaves msg untouched) if
+// requestId doesn't match any tab's pending export, so the caller can fall
+// back to the normal chat handling in OnAiResponseDone.
+static bool OnAiExportResponseDone(MainWindow* win, uint32_t requestId, AiResponseMsg* msg) {
+    WindowTab* targetTab = nullptr;
+    for (WindowTab* t : win->Tabs()) {
+        if (t->aiPendingExportRequestId == requestId) {
+            targetTab = t;
+            break;
+        }
+    }
+    if (!targetTab) {
+        return false;
+    }
+    targetTab->aiPendingExportRequestId = 0;
+    auto kind = (AiRequestType)targetTab->aiPendingExportKind;
+
+    if (msg->isError) {
+        AppendAiExportStatusTurn(targetTab, true, msg->text.Get());
+    } else if (kind == AiRequestType::Quiz) {
+        AiExport::QuizData quiz;
+        FillExportSource(targetTab, quiz.source);
+        ParseQuizFromLlmText(msg->text.Get(), quiz);
+        str::Str path, error;
+        if (quiz.items.len == 0) {
+            AppendAiExportStatusTurn(targetTab, true, "Could not generate quiz questions from the response.");
+        } else if (AiExport::ExportQuiz(quiz, &path, &error)) {
+            TempStr status = str::FormatTemp("Quiz exported to %s", path.Get());
+            AppendAiExportStatusTurn(targetTab, false, status);
+        } else {
+            TempStr status = str::FormatTemp("Quiz export failed: %s", error.Get());
+            AppendAiExportStatusTurn(targetTab, true, status);
+        }
+    } else {
+        AiExport::NoteData note;
+        note.kind = (kind == AiRequestType::StudySheet) ? AiExport::NoteKind::StudySheet : AiExport::NoteKind::Note;
+        FillExportSource(targetTab, note.source);
+        ParseNoteFromLlmText(msg->text.Get(), note);
+        str::Str path, error;
+        if (AiExport::ExportNote(note, &path, &error)) {
+            const char* label = (note.kind == AiExport::NoteKind::StudySheet) ? "Study sheet" : "Note";
+            TempStr status = str::FormatTemp("%s exported to %s", label, path.Get());
+            AppendAiExportStatusTurn(targetTab, false, status);
+        } else {
+            TempStr status = str::FormatTemp("Export failed: %s", error.Get());
+            AppendAiExportStatusTurn(targetTab, true, status);
+        }
+    }
+
+    if (win->CurrentTab() == targetTab) {
+        LoadAiConversationIntoSidebar(win);
+    }
+    delete msg;
+    return true;
+}
+
+static void SubmitAiExportRequest(MainWindow* win, AiRequestType type) {
+    WindowTab* tab = win->CurrentTab();
+    if (!tab || !tab->IsDocLoaded() || !AiTabHasResponse(tab) || tab->aiPendingExportRequestId != 0) {
+        return;
+    }
+
+    if (!gAiBridge || !gAiBridge->IsReady()) {
+        AppendAiExportStatusTurn(tab, true,
+                                 "AI backend not available — is Ollama running with the configured model pulled?");
+        LoadAiConversationIntoSidebar(win);
+        return;
+    }
+
+    // Snapshot source metadata now: the current page/selection may change
+    // before the response arrives.
+    tab->aiPendingExportPage = tab->ctrl ? tab->ctrl->CurrentPageNo() : 0;
+    tab->aiPendingExportSelectionText.Reset();
+    bool isTextOnly = false;
+    TempStr sel = GetSelectedTextTemp(tab, "\n", isTextOnly);
+    if (sel) {
+        tab->aiPendingExportSelectionText.Set(sel);
+    }
+
+    str::Str conversationText;
+    FormatConversationText(tab, conversationText);
+
+    const char* userMessage = "Create a note from this conversation.";
+    if (type == AiRequestType::StudySheet) {
+        userMessage = "Create a study sheet from this conversation.";
+    } else if (type == AiRequestType::Quiz) {
+        userMessage = "Create quiz questions from this conversation.";
+    }
+
+    tab->aiPendingExportKind = (int)type;
+    uint32_t reqId = gAiBridge->EnqueueRequest(type, AiContextMode::Document, userMessage, conversationText.Get(), "",
+                                               win->hwndAiBox);
+    if (reqId != 0) {
+        tab->aiPendingExportRequestId = reqId;
+        UpdateAiExportButtonsEnabled(win);
+    }
+}
+
+static void OnAiExportNoteClicked(MainWindow* win) {
+    SubmitAiExportRequest(win, AiRequestType::Note);
+}
+static void OnAiExportStudySheetClicked(MainWindow* win) {
+    SubmitAiExportRequest(win, AiRequestType::StudySheet);
+}
+static void OnAiExportQuizClicked(MainWindow* win) {
+    SubmitAiExportRequest(win, AiRequestType::Quiz);
+}
+
+// ---------------------------------------------------------------------------
 // Panel creation / layout
 // ---------------------------------------------------------------------------
 
@@ -203,10 +467,22 @@ void LayoutAiContainer(MainWindow* win) {
 
     constexpr int kInputH = 26;
     constexpr int kSendW = 60;
-    int bottomY = std::max(y, rc.dy - kInputH);
+    constexpr int kExportRowH = 24;
+    bool hasExportRow = win->aiExportNoteButton != nullptr;
+    int exportRowH = hasExportRow ? kExportRowH : 0;
+    int bottomY = std::max(y, rc.dy - kInputH - exportRowH);
 
     int historyH = bottomY - y;
     MoveWindow(win->aiHistoryEdit->hwnd, 0, y, dx, historyH, TRUE);
+
+    if (hasExportRow) {
+        int exportY = bottomY;
+        int colW = dx / 3;
+        MoveWindow(win->aiExportNoteButton->hwnd, 0, exportY, colW, kExportRowH, TRUE);
+        MoveWindow(win->aiExportStudySheetButton->hwnd, colW, exportY, colW, kExportRowH, TRUE);
+        MoveWindow(win->aiExportQuizButton->hwnd, 2 * colW, exportY, dx - 2 * colW, kExportRowH, TRUE);
+        bottomY += kExportRowH;
+    }
 
     MoveWindow(win->aiInputEdit->hwnd, 0, bottomY, std::max(0, dx - kSendW), kInputH, TRUE);
     MoveWindow(win->aiSendButton->hwnd, std::max(0, dx - kSendW), bottomY, kSendW, kInputH, TRUE);
@@ -234,10 +510,16 @@ static LRESULT CALLBACK WndProcAiBox(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, 
             }
             break;
 
-        // AiBridge posts these to win->hwndAiBox (see SubmitAiChatMessage).
+        // AiBridge posts these to win->hwndAiBox for both chat (see
+        // SubmitAiChatMessage) and export (see SubmitAiExportRequest)
+        // requests. Try the export path first since it knows the requestId
+        // space it owns (WindowTab::aiPendingExportRequestId); if it isn't
+        // an export response, fall back to the chat handler.
         case WM_AI_RESPONSE_DONE:
         case WM_AI_ERROR:
-            OnAiResponseDone(hwnd, wp, lp);
+            if (!OnAiExportResponseDone(win, (uint32_t)wp, (AiResponseMsg*)lp)) {
+                OnAiResponseDone(hwnd, wp, lp);
+            }
             break;
 
         // AiBridge posts this to win->hwndAiBox (see RefreshAiModelList).
@@ -331,6 +613,15 @@ void CreateAiSidebar(MainWindow* win) {
 
     win->aiSendButton = CreateButton(win->hwndAiBox, _TRA("Send"), MkFunc0<MainWindow>(OnAiSendClicked, win), IsUIRtl());
 
+    // AI-HOOK: export system buttons — enabled once the conversation has an
+    // AI response (see UpdateAiExportButtonsEnabled).
+    win->aiExportNoteButton =
+        CreateButton(win->hwndAiBox, _TRA("Note"), MkFunc0<MainWindow>(OnAiExportNoteClicked, win), IsUIRtl());
+    win->aiExportStudySheetButton = CreateButton(win->hwndAiBox, _TRA("Study Sheet"),
+                                                 MkFunc0<MainWindow>(OnAiExportStudySheetClicked, win), IsUIRtl());
+    win->aiExportQuizButton =
+        CreateButton(win->hwndAiBox, _TRA("Quiz"), MkFunc0<MainWindow>(OnAiExportQuizClicked, win), IsUIRtl());
+
     SubclassAiBox(win);
     LoadAiConversationIntoSidebar(win);
     UpdateControlsColors(win);
@@ -384,6 +675,8 @@ void LoadAiConversationIntoSidebar(MainWindow* win) {
     HWND h = win->aiHistoryEdit->hwnd;
     SendMessageW(h, EM_SETSEL, (WPARAM)-1, (LPARAM)-1);
     SendMessageW(h, EM_SCROLLCARET, 0, 0);
+
+    UpdateAiExportButtonsEnabled(win);
 }
 
 // ---------------------------------------------------------------------------

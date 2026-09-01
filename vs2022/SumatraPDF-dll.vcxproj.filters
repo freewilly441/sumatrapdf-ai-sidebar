@@ -111,6 +111,18 @@
     <ClInclude Include="..\src\Accelerators.h">
       <Filter>src</Filter>
     </ClInclude>
+    <ClInclude Include="..\src\AiBridge.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\AiExport.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\AiRequest.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\AiSidebarWnd.h">
+      <Filter>src</Filter>
+    </ClInclude>
     <ClInclude Include="..\src\Annotation.h">
       <Filter>src</Filter>
     </ClInclude>
@@ -396,6 +408,15 @@
       <Filter>ext\synctex</Filter>
     </ClCompile>
     <ClCompile Include="..\src\Accelerators.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\AiBridge.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\AiExport.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\AiSidebarWnd.cpp">
       <Filter>src</Filter>
     </ClCompile>
     <ClCompile Include="..\src\Annotation.cpp">
@@ -790,8 +811,10 @@
     </None>
     <None Include="..\.gitignore" />
     <None Include="..\Claude.md" />
+    <None Include="..\NOTICE.md" />
     <None Include="..\SECURITY.md" />
-    <None Include="..\ailog.txt" />
+    <None Include="..\build_log.txt" />
+    <None Include="..\build_log2.txt" />
     <None Include="..\cmd\build-codeql.ts">
       <Filter>cmd</Filter>
     </None>
@@ -807,6 +830,9 @@
     <None Include="..\cmd\build.ts">
       <Filter>cmd</Filter>
     </None>
+    <None Include="..\cmd\bun.lock">
+      <Filter>cmd</Filter>
+    </None>
     <None Include="..\cmd\check-access-keys.ts">
       <Filter>cmd</Filter>
     </None>
@@ -820,6 +846,9 @@
       <Filter>cmd</Filter>
     </None>
     <None Include="..\cmd\clean.ts">
+      <Filter>cmd</Filter>
+    </None>
+    <None Include="..\cmd\compress-docs-images.ts">
       <Filter>cmd</Filter>
     </None>
     <None Include="..\cmd\cppcheck.ts">
@@ -846,12 +875,6 @@
     <None Include="..\cmd\gen-settings.ts">
       <Filter>cmd</Filter>
     </None>
-    <None Include="..\cmd\gen_docs.search.html">
-      <Filter>cmd</Filter>
-    </None>
-    <None Include="..\cmd\gen_docs.search.js">
-      <Filter>cmd</Filter>
-    </None>
     <None Include="..\cmd\logview-build.ts">
       <Filter>cmd</Filter>
     </None>
@@ -859,6 +882,9 @@
       <Filter>cmd</Filter>
     </None>
     <None Include="..\cmd\markdown-it.min.js">
+      <Filter>cmd</Filter>
+    </None>
+    <None Include="..\cmd\package.json">
       <Filter>cmd</Filter>
     </None>
     <None Include="..\cmd\pdb-sizes.ts">
@@ -880,6 +906,9 @@
       <Filter>cmd</Filter>
     </None>
     <None Include="..\cmd\trigger-codeql.ts">
+      <Filter>cmd</Filter>
+    </None>
+    <None Include="..\cmd\tsconfig.json">
       <Filter>cmd</Filter>
     </None>
     <None Include="..\cmd\update-auto-update-ver.ts">
@@ -988,6 +1017,9 @@
       <Filter>docs\md</Filter>
     </None>
     <None Include="..\docs\md\Submit-crash-report.md">
+      <Filter>docs\md</Filter>
+    </None>
+    <None Include="..\docs\md\SumatraPDF-documentation-website.md">
       <Filter>docs\md</Filter>
     </None>
     <None Include="..\docs\md\SumatraPDF-documentation.md">

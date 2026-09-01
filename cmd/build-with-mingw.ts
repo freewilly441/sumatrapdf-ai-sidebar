@@ -1370,6 +1370,7 @@ const sumatraFiles: FileGroup[] = [
       "Accelerators.*",
       "Actions.*",
       "AiBridge.*",
+      "AiExport.*",
       "AiRequest.h",
       "AiSidebarWnd.*",
       "AppColors.*",

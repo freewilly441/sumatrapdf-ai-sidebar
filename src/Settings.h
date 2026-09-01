@@ -247,6 +247,11 @@ struct AiSettings {
     bool sidebarVisible;
     // width of the AI chat sidebar panel
     int sidebarDx;
+    // directory where exported notes/study sheets/quizzes (JSON files, see
+    // docs/export-schema.md) are written. If empty, defaults to an
+    // "AiExports" folder next to SumatraPDF-settings.txt (see
+    // AiExport::GetExportDirTemp()).
+    char* exportDir;
 };
 
 // Values which are persisted for bookmarks/favorites
@@ -695,9 +700,10 @@ static const FieldInfo gAiSettingsFields[] = {
     {offsetof(AiSettings, ollamaModel), SettingType::String, (intptr_t)"llama3.2"},
     {offsetof(AiSettings, sidebarVisible), SettingType::Bool, false},
     {offsetof(AiSettings, sidebarDx), SettingType::Int, 0},
+    {offsetof(AiSettings, exportDir), SettingType::String, 0},
 };
-static const StructInfo gAiSettingsInfo = {sizeof(AiSettings), 5, gAiSettingsFields,
-                                           "Backend\0OllamaHost\0OllamaModel\0SidebarVisible\0SidebarDx"};
+static const StructInfo gAiSettingsInfo = {sizeof(AiSettings), 6, gAiSettingsFields,
+                                           "Backend\0OllamaHost\0OllamaModel\0SidebarVisible\0SidebarDx\0ExportDir"};
 
 static const FieldInfo gFavoriteFields[] = {
     {offsetof(Favorite, name), SettingType::String, 0},
