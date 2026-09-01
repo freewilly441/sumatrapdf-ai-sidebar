@@ -30,9 +30,11 @@ enum class AiRequestState {
 
 // Drives instruction-prefix selection in AiBridge::BuildMessages().
 enum class AiRequestType {
-    Chat,    // freeform message typed in the sidebar (any context mode)
-    Define,  // quick action: single-word inline definition of the selection
-    Explain, // quick action: explain the current selection
+    Chat,          // freeform message typed in the sidebar (any context mode)
+    Define,        // quick action: single-word inline definition of the selection
+    Explain,       // quick action: explain the current selection
+    RefreshModels, // not a chat turn: GET /api/tags via the same queue/thread;
+                   // see AiBridge::RequestModelListRefresh().
 };
 
 // Which part of the document a chat turn's context comes from.
@@ -54,6 +56,18 @@ enum class AiContextMode {
 struct AiResponseMsg {
     uint32_t    requestId{0};
     str::Str    text; // complete response text (no token streaming yet)
+    bool        isError{false};
+};
+
+// ---------------------------------------------------------------------------
+// AiModelsMsg
+//
+// Result of a RefreshModels request (GET /api/tags). Same heap-allocated /
+// ownership-transfers-at-PostMessage rules as AiResponseMsg above.
+// ---------------------------------------------------------------------------
+struct AiModelsMsg {
+    uint32_t    requestId{0};
+    StrVec      models;  // discovered model names (may be empty); unused if isError
     bool        isError{false};
 };
 
@@ -108,3 +122,7 @@ constexpr UINT WM_AI_RESPONSE_DONE = WM_USER + 200;
 constexpr UINT WM_AI_ERROR = WM_USER + 201;
 // lParam = AiResponseMsg* (isError=true); same ownership rules
 // wParam = request_id
+
+constexpr UINT WM_AI_MODELS_UPDATED = WM_USER + 202;
+// lParam = AiModelsMsg*; UI thread takes ownership, must delete
+// wParam = request_id (posted in response to RequestModelListRefresh())

@@ -54,8 +54,23 @@ class AiBridge {
     // Returns true once the Ollama health check has passed.
     bool IsReady() const;
 
+    // Thread-safe. Enqueue a GET /api/tags via the same request queue/bridge
+    // thread used for chat; posts WM_AI_MODELS_UPDATED to targetHwnd with the
+    // discovered model names. Returns assigned request_id, or 0 if the bridge
+    // is not initialized/shutting down (same as EnqueueRequest).
+    uint32_t RequestModelListRefresh(HWND targetHwnd);
+
+    // Thread-safe. Changes the model used for chat requests sent after this
+    // call returns (requests already in flight keep using the old model).
+    void SetActiveModel(const char* model);
+
   private:
     void RunBridgeLoop();
+
+    // GET /api/tags; parses the "models" array's "name" fields into modelsOut.
+    // Returns false only on HTTP/transport failure — an empty (but successful)
+    // list means Ollama is reachable but has no models pulled.
+    bool FetchModelList(StrVec& modelsOut);
 
     // GET /api/tags; used both as a startup health check and to confirm the
     // configured model is actually available.
@@ -89,7 +104,13 @@ class AiBridge {
     AtomicInt mOllamaReady{0};
     AtomicInt mShuttingDown{0};
 
-    str::Str mHost;  // e.g. "http://localhost:11434"
+    str::Str mHost;  // e.g. "http://localhost:11434"; not changed after Init()
+
+    // mModel: written from the UI thread (SetActiveModel, called when the
+    // user picks a model in the sidebar), read from the bridge thread
+    // (BuildMessagesJson) — needs its own lock since it's no longer
+    // write-once-before-thread-start like mHost.
+    mutable Mutex mModelLock;
     str::Str mModel; // e.g. "llama3.2"
 };
 

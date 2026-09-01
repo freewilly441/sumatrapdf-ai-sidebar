@@ -136,6 +136,8 @@ struct MainWindow {
     UINT_PTR aiBoxSubclassId = 0;
     LabelWithCloseWnd* aiLabelWithClose = nullptr;
     DropDown* aiModeDropDown = nullptr;
+    DropDown* aiModelDropDown = nullptr;      // which Ollama model is active
+    Button* aiModelRefreshButton = nullptr;   // re-query GET /api/tags on demand
     Edit* aiHistoryEdit = nullptr; // read-only, shows the conversation so far
     Edit* aiInputEdit = nullptr;   // where the user types their message
     Button* aiSendButton = nullptr;

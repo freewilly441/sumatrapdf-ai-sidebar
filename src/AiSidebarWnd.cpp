@@ -146,6 +146,37 @@ static void OnAiSendClicked(MainWindow* win) {
     SubmitAiChatMessage(win);
 }
 
+// Message shown in the model dropdown itself (not the history pane) when
+// there's nothing real to show there. Mirrors the wording of the existing
+// "AI backend not available" chat error in SubmitAiChatMessage().
+static void SetAiModelDropDownPlaceholder(MainWindow* win, const char* text) {
+    if (!win->aiModelDropDown) {
+        return;
+    }
+    win->aiModelDropDown->SetItemsSeqStrings(text);
+    win->aiModelDropDown->SetCurrentSelection(0);
+}
+
+static void OnAiModelRefreshClicked(MainWindow* win) {
+    RefreshAiModelList(win);
+}
+
+// User picked a different model from the dropdown: switch the bridge over
+// immediately and persist the choice, the same way SetAiSidebarVisibility()
+// persists SidebarVisible — just write gGlobalPrefs directly, no explicit
+// SaveSettings() call (that happens on the app's existing save points).
+static void OnAiModelSelectionChanged(MainWindow* win) {
+    int idx = win->aiModelDropDown->GetCurrentSelection();
+    if (idx < 0 || idx >= win->aiModelDropDown->items.Size()) {
+        return;
+    }
+    const char* model = win->aiModelDropDown->items.At(idx);
+    str::ReplaceWithCopy(&gGlobalPrefs->aiSettings.ollamaModel, model);
+    if (gAiBridge) {
+        gAiBridge->SetActiveModel(model);
+    }
+}
+
 void LayoutAiContainer(MainWindow* win) {
     HWND box = win->hwndAiBox;
     if (!box || !win->aiLabelWithClose) {
@@ -162,6 +193,13 @@ void LayoutAiContainer(MainWindow* win) {
     int ddH = std::max(win->aiModeDropDown->GetIdealSize().dy, 24);
     MoveWindow(win->aiModeDropDown->hwnd, 0, y, dx, ddH, TRUE);
     y += ddH;
+
+    constexpr int kModelRefreshW = 60;
+    int modelDdH = std::max(win->aiModelDropDown->GetIdealSize().dy, 24);
+    int modelDdW = std::max(0, dx - kModelRefreshW);
+    MoveWindow(win->aiModelDropDown->hwnd, 0, y, modelDdW, modelDdH, TRUE);
+    MoveWindow(win->aiModelRefreshButton->hwnd, modelDdW, y, dx - modelDdW, modelDdH, TRUE);
+    y += modelDdH;
 
     constexpr int kInputH = 26;
     constexpr int kSendW = 60;
@@ -200,6 +238,11 @@ static LRESULT CALLBACK WndProcAiBox(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, 
         case WM_AI_RESPONSE_DONE:
         case WM_AI_ERROR:
             OnAiResponseDone(hwnd, wp, lp);
+            break;
+
+        // AiBridge posts this to win->hwndAiBox (see RefreshAiModelList).
+        case WM_AI_MODELS_UPDATED:
+            OnAiModelsUpdated(hwnd, wp, lp);
             break;
     }
     return DefSubclassProc(hwnd, msg, wp, lp);
@@ -245,6 +288,21 @@ void CreateAiSidebar(MainWindow* win) {
     dropDown->SetCurrentSelection(0);
     win->aiModeDropDown = dropDown;
 
+    auto modelDropDown = new DropDown();
+    {
+        DropDown::CreateArgs args;
+        args.parent = win->hwndAiBox;
+        args.font = GetAppTreeFont();
+        args.isRtl = IsUIRtl();
+        modelDropDown->Create(args);
+    }
+    modelDropDown->onSelectionChanged = MkFunc0<MainWindow>(OnAiModelSelectionChanged, win);
+    win->aiModelDropDown = modelDropDown;
+    SetAiModelDropDownPlaceholder(win, "Loading models...\0");
+
+    win->aiModelRefreshButton =
+        CreateButton(win->hwndAiBox, _TRA("Refresh"), MkFunc0<MainWindow>(OnAiModelRefreshClicked, win), IsUIRtl());
+
     auto historyEdit = new Edit();
     {
         Edit::CreateArgs args;
@@ -276,6 +334,13 @@ void CreateAiSidebar(MainWindow* win) {
     SubclassAiBox(win);
     LoadAiConversationIntoSidebar(win);
     UpdateControlsColors(win);
+
+    // AI-HOOK: kick off model discovery for this window's dropdown. On the
+    // very first window this is a no-op (gAiBridge doesn't exist yet at this
+    // point in startup) — SumatraStartup.cpp triggers the initial refresh
+    // itself once the bridge is up. For any later window (Ctrl+N) the bridge
+    // already exists, so this is what populates it.
+    RefreshAiModelList(win);
 }
 
 void SetAiSidebarVisibility(MainWindow* win, bool visible) {
@@ -446,5 +511,67 @@ void OnAiResponseDone(HWND aiBoxHwnd, WPARAM requestIdParam, LPARAM msgPtr) {
     if (win->CurrentTab() == targetTab) {
         LoadAiConversationIntoSidebar(win);
     }
+    delete msg;
+}
+
+// ---------------------------------------------------------------------------
+// Model discovery
+// ---------------------------------------------------------------------------
+
+void RefreshAiModelList(MainWindow* win) {
+    if (!win->hwndAiBox) {
+        return;
+    }
+    if (!gAiBridge) {
+        // Same situation SubmitAiChatMessage() reports for chat requests:
+        // Ollama isn't reachable (or the bridge failed to start). Leave the
+        // dropdown in an explicit, non-broken placeholder state rather than
+        // empty/disabled.
+        SetAiModelDropDownPlaceholder(win, "AI backend not available\0");
+        return;
+    }
+    gAiBridge->RequestModelListRefresh(win->hwndAiBox);
+}
+
+void OnAiModelsUpdated(HWND aiBoxHwnd, WPARAM /* requestId */, LPARAM msgPtr) {
+    auto* msg = (AiModelsMsg*)msgPtr;
+
+    MainWindow* win = FindMainWindowByHwnd(aiBoxHwnd);
+    if (!win || !win->aiModelDropDown) {
+        delete msg;
+        return;
+    }
+
+    if (msg->isError) {
+        SetAiModelDropDownPlaceholder(win, "AI backend not available\0");
+        delete msg;
+        return;
+    }
+    if (msg->models.IsEmpty()) {
+        // Ollama is reachable but nothing has been pulled yet.
+        SetAiModelDropDownPlaceholder(win, "No models pulled\0");
+        delete msg;
+        return;
+    }
+
+    const char* configured = gGlobalPrefs->aiSettings.ollamaModel;
+    int idx = msg->models.Find(configured ? configured : "");
+    if (idx < 0) {
+        // Previously selected model is gone (e.g. removed via "ollama rm",
+        // or never matched what's actually pulled) — fall back to the first
+        // available model and persist that as the new default, the same way
+        // a user's manual selection is persisted.
+        idx = 0;
+        const char* fallback = msg->models.At(0);
+        logf("AiSidebarWnd: configured model '%s' not found; falling back to '%s'\n",
+             configured ? configured : "(null)", fallback);
+        str::ReplaceWithCopy(&gGlobalPrefs->aiSettings.ollamaModel, fallback);
+        gAiBridge->SetActiveModel(fallback);
+    }
+
+    win->aiModelDropDown->SetItems(msg->models);
+    win->aiModelDropDown->SetCurrentSelection(idx);
+    LayoutAiContainer(win);
+
     delete msg;
 }

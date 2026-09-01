@@ -86,6 +86,47 @@ static bool JsonExtractString(const char* json, const char* key, str::Str& out) 
     return true;
 }
 
+// Extracts every value of "<key>":"..." occurring in json, in order, into
+// out (e.g. every model's "name" field in an Ollama /api/tags response's
+// "models" array). Same "not a full parser" approach as JsonExtractString
+// above — good enough for a flat string key that doesn't recur nested inside
+// itself, which "name" doesn't in Ollama's response shape.
+static void JsonExtractStringArrayValues(const char* json, const char* key, StrVec& out) {
+    if (!json || !key) return;
+
+    str::Str pat;
+    pat.AppendChar('"');
+    pat.Append(key);
+    pat.Append("\":\"", 3);
+
+    const char* pos = json;
+    for (;;) {
+        pos = str::Find(pos, pat.Get());
+        if (!pos) break;
+        pos += pat.size();
+
+        str::Str val;
+        while (*pos && *pos != '"') {
+            if (*pos == '\\' && *(pos + 1)) {
+                pos++;
+                switch (*pos) {
+                    case 'n':  val.AppendChar('\n'); break;
+                    case 'r':  val.AppendChar('\r'); break;
+                    case 't':  val.AppendChar('\t'); break;
+                    case '"':  val.AppendChar('"');  break;
+                    case '\\': val.AppendChar('\\'); break;
+                    default:   val.AppendChar(*pos); break;
+                }
+            } else {
+                val.AppendChar(*pos);
+            }
+            pos++;
+        }
+        if (*pos == '"') pos++;
+        out.Append(val.Get());
+    }
+}
+
 // Parses "http://host:port" (scheme optional, port optional) into separate
 // host and port. Ollama defaults to port 11434 when none is given.
 static void ParseHostUrl(const char* url, str::Str& hostOut, int& portOut) {
@@ -341,6 +382,16 @@ bool AiBridge::IsReady() const {
     return AtomicIntGet(const_cast<AtomicInt*>(&mOllamaReady)) != 0;
 }
 
+uint32_t AiBridge::RequestModelListRefresh(HWND targetHwnd) {
+    return EnqueueRequest(AiRequestType::RefreshModels, AiContextMode::Selection, "", "", "", targetHwnd);
+}
+
+void AiBridge::SetActiveModel(const char* model) {
+    ScopedLock lk(mModelLock);
+    mModel.Set(model);
+    logf("AiBridge::SetActiveModel: now using model=%s\n", model);
+}
+
 // ---------------------------------------------------------------------------
 // Bridge thread loop
 // ---------------------------------------------------------------------------
@@ -397,6 +448,22 @@ void AiBridge::RunBridgeLoop() {
                 continue;
             }
 
+            if (req->type == AiRequestType::RefreshModels) {
+                AiModelsMsg* modelsMsg = new AiModelsMsg();
+                modelsMsg->requestId   = req->id;
+                bool fetchOk           = FetchModelList(modelsMsg->models);
+                modelsMsg->isError     = !fetchOk;
+
+                BOOL modelsPosted = PostMessage(req->targetHwnd, WM_AI_MODELS_UPDATED,
+                                                (WPARAM)req->id, (LPARAM)modelsMsg);
+                if (!modelsPosted) {
+                    logf("AiBridge: PostMessage(WM_AI_MODELS_UPDATED) failed for id=%u (HWND gone)\n", req->id);
+                    delete modelsMsg;
+                }
+                delete req;
+                continue;
+            }
+
             str::Str responseText;
             bool ok = SendChatRequest(*req, responseText);
 
@@ -426,6 +493,26 @@ void AiBridge::RunBridgeLoop() {
 
 done:
     logf("AiBridge::RunBridgeLoop: exited\n");
+}
+
+// ---------------------------------------------------------------------------
+// Model discovery
+// ---------------------------------------------------------------------------
+
+bool AiBridge::FetchModelList(StrVec& modelsOut) {
+    str::Str host;
+    int port;
+    ParseHostUrl(mHost.Get(), host, port);
+
+    str::Str resp;
+    if (!AiHttpRequest(host.Get(), port, "/api/tags", "GET", nullptr, resp)) {
+        logf("AiBridge::FetchModelList: HTTP GET /api/tags failed\n");
+        return false;
+    }
+
+    JsonExtractStringArrayValues(resp.Get(), "name", modelsOut);
+    logf("AiBridge::FetchModelList: found %d model(s)\n", modelsOut.Size());
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -472,7 +559,10 @@ void AiBridge::BuildMessagesJson(const AiRequest& req, str::Str& jsonOut) const 
     }
 
     jsonOut.AppendFmt("{\"model\":\"");
-    JsonEscapeAppend(mModel.Get(), jsonOut);
+    {
+        ScopedLock lk(mModelLock);
+        JsonEscapeAppend(mModel.Get(), jsonOut);
+    }
     jsonOut.Append("\",\"stream\":false,\"messages\":[");
 
     jsonOut.Append("{\"role\":\"system\",\"content\":\"");

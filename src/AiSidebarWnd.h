@@ -62,3 +62,17 @@ void AiQuickAction(MainWindow* win, AiRequestType type);
 // Handles WM_AI_RESPONSE_DONE/WM_AI_ERROR, posted to win->hwndAiBox.
 // Takes ownership of msgPtr (AiResponseMsg*) and deletes it before returning.
 void OnAiResponseDone(HWND aiBoxHwnd, WPARAM requestId, LPARAM msgPtr);
+
+// Kicks off a GET /api/tags model-list refresh for win's sidebar (used for
+// the initial startup discovery and the dropdown's manual refresh button).
+// If gAiBridge isn't available, puts the model dropdown directly into the
+// same "AI backend not available" placeholder state used elsewhere, rather
+// than enqueuing anything.
+void RefreshAiModelList(MainWindow* win);
+
+// Handles WM_AI_MODELS_UPDATED, posted to win->hwndAiBox in response to
+// RefreshAiModelList(). Takes ownership of msgPtr (AiModelsMsg*) and deletes
+// it before returning. Populates win->aiModelDropDown; falls back to the
+// first discovered model (persisting the change) if the previously selected
+// model (gGlobalPrefs->aiSettings.ollamaModel) isn't in the list.
+void OnAiModelsUpdated(HWND aiBoxHwnd, WPARAM requestId, LPARAM msgPtr);

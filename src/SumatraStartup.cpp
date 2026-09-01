@@ -2614,6 +2614,12 @@ ContinueOpenWindow:
             gAiBridge = nullptr;
         } else {
             logf("AiBridge: initialized, bridge thread started (host=%s model=%s)\n", host, model);
+            // AI-HOOK: CreateAiSidebar() ran earlier in startup, before
+            // gAiBridge existed, so its own RefreshAiModelList() call was a
+            // no-op placeholder. Trigger the real discovery now for the
+            // first window; any later window (Ctrl+N) triggers its own from
+            // CreateAiSidebar() since gAiBridge exists by then.
+            RefreshAiModelList(win);
         }
     }
 
